@@ -24,6 +24,7 @@ export type MaskTransform = {
   y: number;
   rotation: number;
   scale: number;
+  mode: 'cover' | 'project';
 };
 
 export type WalkingEnginePose = {
@@ -158,6 +159,14 @@ export type PhysicsState = {
 export type AnimationPivotEvent = {
   time: number; // 0.0 to 1.0, relative to clip duration
   newPivot: keyof WalkingEnginePivotOffsets;
+};
+
+// Represents a single keyframe pose in an animation sequence.
+export type Keyframe = {
+  id: string;
+  name: string;
+  pose: WalkingEnginePivotOffsets;
+  durationToNext: number; // in milliseconds
 };
 
 // A single, self-contained piece of motion.

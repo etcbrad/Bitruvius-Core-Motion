@@ -44,7 +44,8 @@
             },
             animation: {
                 'terminal-boot': 'terminal-boot 2s steps(1, end) forwards',
-                'pulse-red': 'pulse-red 1.5s ease-in-out infinite'
+                'pulse-red': 'pulse-red 1.5s ease-in-out infinite',
+                'cursor-blink': 'cursor-blink 1s step-end infinite',
             },
             keyframes: {
                 'terminal-boot': {
@@ -56,6 +57,10 @@
                 'pulse-red': {
                   '0%, 100%': { fill: '#f87171' /* red-400 */, filter: 'drop-shadow(0 0 2px #ef4444)'},
                   '50%': { fill: '#ef4444' /* red-500 */, filter: 'drop-shadow(0 0 5px #ef4444)'},
+                },
+                'cursor-blink': {
+                  '0%, 100%': { opacity: '1' },
+                  '50%': { opacity: '0' },
                 }
             }
           }
