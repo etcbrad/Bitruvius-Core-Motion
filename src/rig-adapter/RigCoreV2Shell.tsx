@@ -377,6 +377,15 @@ export const RigCoreV2Shell: React.FC = () => {
   const [jointEnabled, setJointEnabled] = useState<Partial<Record<JointId, boolean>>>(() =>
     Object.fromEntries(JOINT_IDS.map((jointId) => [jointId, true])) as Partial<Record<JointId, boolean>>
   );
+  const [jointVisibility, setJointVisibility] = useState<Partial<Record<JointId, boolean>>>(() =>
+    Object.fromEntries(JOINT_IDS.map((jointId) => [jointId, true])) as Partial<Record<JointId, boolean>>
+  );
+  const [skeletonVisibility, setSkeletonVisibility] = useState<Partial<Record<JointId, boolean>>>(() =>
+    Object.fromEntries(JOINT_IDS.map((jointId) => [jointId, true])) as Partial<Record<JointId, boolean>>
+  );
+  const [showJoints, setShowJoints] = useState(true);
+  const [showSkeleton, setShowSkeleton] = useState(true);
+  const [showMasks, setShowMasks] = useState(true);
   const [transferInput, setTransferInput] = useState("");
   const [transferStatus, setTransferStatus] = useState("");
   const [fixTitle, setFixTitle] = useState("");
@@ -984,6 +993,16 @@ export const RigCoreV2Shell: React.FC = () => {
     },
     [appendFixEntry, rig]
   );
+  const setAllJointVisibility = useCallback((visible: boolean) => {
+    setJointVisibility(
+      Object.fromEntries(JOINT_IDS.map((jointId) => [jointId, visible])) as Partial<Record<JointId, boolean>>
+    );
+  }, []);
+  const setAllSkeletonVisibility = useCallback((visible: boolean) => {
+    setSkeletonVisibility(
+      Object.fromEntries(JOINT_IDS.map((jointId) => [jointId, visible])) as Partial<Record<JointId, boolean>>
+    );
+  }, []);
 
   const handleJointDrag = useCallback(
     (jointId: JointId, x: number, y: number) => {
@@ -2920,6 +2939,80 @@ export const RigCoreV2Shell: React.FC = () => {
               ? "Masks only: drag updates mask anchors, skeletal drag is disabled."
               : "Lock both: mask and skeletal drag controls are both active."}
         </div>
+        <div style={{ marginTop: "10px", border: "1px solid #d4d4d8", borderRadius: "6px", padding: "8px" }}>
+          <div style={{ fontSize: "11px", fontWeight: 700, color: "#374151" }}>Visibility</div>
+          <div style={{ marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "6px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151" }}>
+              <input type="checkbox" checked={showJoints} onChange={(event) => setShowJoints(event.target.checked)} />
+              Joints (all)
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151" }}>
+              <input type="checkbox" checked={showSkeleton} onChange={(event) => setShowSkeleton(event.target.checked)} />
+              Skeleton (all)
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#374151" }}>
+              <input type="checkbox" checked={showMasks} onChange={(event) => setShowMasks(event.target.checked)} />
+              Masks (all)
+            </label>
+          </div>
+          <div style={{ marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: "10px", color: "#6b7280" }}>Joints by piece</div>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  <button type="button" style={{ fontSize: "10px", padding: "2px 6px", border: "1px solid #d4d4d8", background: "#fff", cursor: "pointer" }} onClick={() => setAllJointVisibility(true)}>All</button>
+                  <button type="button" style={{ fontSize: "10px", padding: "2px 6px", border: "1px solid #d4d4d8", background: "#fff", cursor: "pointer" }} onClick={() => setAllJointVisibility(false)}>None</button>
+                </div>
+              </div>
+              <div style={{ marginTop: "4px", maxHeight: "130px", overflowY: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}>
+                {JOINT_IDS.map((jointId) => (
+                  <label key={`joint-vis-${jointId}`} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#4b5563" }}>
+                    <input
+                      type="checkbox"
+                      checked={jointVisibility[jointId] !== false}
+                      onChange={(event) =>
+                        setJointVisibility((prev) => ({
+                          ...prev,
+                          [jointId]: event.target.checked,
+                        }))
+                      }
+                    />
+                    {formatJointLabel(jointId)}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontSize: "10px", color: "#6b7280" }}>Skeleton by piece</div>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  <button type="button" style={{ fontSize: "10px", padding: "2px 6px", border: "1px solid #d4d4d8", background: "#fff", cursor: "pointer" }} onClick={() => setAllSkeletonVisibility(true)}>All</button>
+                  <button type="button" style={{ fontSize: "10px", padding: "2px 6px", border: "1px solid #d4d4d8", background: "#fff", cursor: "pointer" }} onClick={() => setAllSkeletonVisibility(false)}>None</button>
+                </div>
+              </div>
+              <div style={{ marginTop: "4px", maxHeight: "130px", overflowY: "auto", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px" }}>
+                {JOINT_IDS.map((jointId) => (
+                  <label key={`skeleton-vis-${jointId}`} style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "10px", color: "#4b5563" }}>
+                    <input
+                      type="checkbox"
+                      checked={skeletonVisibility[jointId] !== false}
+                      onChange={(event) =>
+                        setSkeletonVisibility((prev) => ({
+                          ...prev,
+                          [jointId]: event.target.checked,
+                        }))
+                      }
+                    />
+                    {formatJointLabel(jointId)}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ marginTop: "8px", fontSize: "10px", color: "#6b7280" }}>
+            Masks by piece are controlled in the mask list below with each item Hide/Show.
+          </div>
+        </div>
         <label style={{ display: "block", marginTop: "10px", fontSize: "12px", color: "#6b7280" }}>
           Selected Joint
         </label>
@@ -3767,6 +3860,11 @@ export const RigCoreV2Shell: React.FC = () => {
           cameraFocusMode={cameraFocusMode}
           onPinchZoom={handlePinchZoom}
           jointEnabledMap={jointEnabled}
+          jointsVisible={showJoints}
+          skeletonVisible={showSkeleton}
+          masksVisible={showMasks}
+          jointVisibilityMap={jointVisibility}
+          skeletonVisibilityMap={skeletonVisibility}
           className="rig-core-v2-viewport"
           overlayInteractionEnabled={overlayEditingEnabled}
           onJointClick={(jointId) => {

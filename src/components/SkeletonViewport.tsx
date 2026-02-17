@@ -32,6 +32,11 @@ type SkeletonViewportProps = {
   cameraFocusMode?: "root_pin" | "selected_joint" | "static";
   cleanFkMode?: boolean;
   jointEnabledMap?: Partial<Record<JointId, boolean>>;
+  skeletonVisible?: boolean;
+  jointsVisible?: boolean;
+  masksVisible?: boolean;
+  jointVisibilityMap?: Partial<Record<JointId, boolean>>;
+  skeletonVisibilityMap?: Partial<Record<JointId, boolean>>;
   overlayInteractionEnabled?: boolean;
   onJointPointerDown?: (
     jointId: JointId,
@@ -231,6 +236,11 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   cameraFocusMode = "static",
   cleanFkMode = false,
   jointEnabledMap,
+  skeletonVisible = true,
+  jointsVisible = true,
+  masksVisible = true,
+  jointVisibilityMap,
+  skeletonVisibilityMap,
   overlayInteractionEnabled = true,
   onJointPointerDown,
   onJointClick,
@@ -298,6 +308,14 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   const isJointEnabled = useCallback(
     (jointId: JointId): boolean => jointEnabledMap?.[jointId] !== false,
     [jointEnabledMap]
+  );
+  const isJointVisible = useCallback(
+    (jointId: JointId): boolean => jointVisibilityMap?.[jointId] !== false,
+    [jointVisibilityMap]
+  );
+  const isSkeletonJointVisible = useCallback(
+    (jointId: JointId): boolean => skeletonVisibilityMap?.[jointId] !== false,
+    [skeletonVisibilityMap]
   );
 
   const cameraZoomFraction = useMemo(() => {
@@ -1069,7 +1087,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       </defs>
 
       <rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#rig-grid)" />
-      {world.waist && (
+      {skeletonVisible && world.waist && (
         <g pointerEvents="none">
           <circle
             cx={toDisplay(world.waist.worldPosition).x}
@@ -1097,7 +1115,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           />
         </g>
       )}
-      {(() => {
+      {jointsVisible && (() => {
         const waist = world.waist?.worldPosition ?? { x: 0, y: 0 };
         const leftFoot = world.l_foot?.worldPosition;
         const rightFoot = world.r_foot?.worldPosition;
@@ -1126,7 +1144,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           x: rootAnchorUseGroundX ? splitX : waist.x,
           y: rootAnchorUseGroundY && hasFootGroundPin ? groundRootY : waist.y,
         });
-        const rootEnabled = isJointEnabled("root");
+        const rootEnabled = isJointEnabled("root") && isJointVisible("root");
         const haloColor = "rgba(220, 38, 38, 0.35)";
         return (
           <g
@@ -1301,11 +1319,13 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {primitiveSegments.map((segment) => {
+      {skeletonVisible && primitiveSegments.map((segment) => {
         const activationJointId = getPrimitiveActivationJointId(segment.childId, segment.parentId);
         const activationJoint = world[activationJointId];
         const enabled =
           Boolean(activationJoint) &&
+          isSkeletonJointVisible(segment.childId) &&
+          isSkeletonJointVisible(segment.parentId) &&
           isJointEnabled(segment.childId) &&
           isJointEnabled(segment.parentId) &&
           isJointEnabled(activationJointId);
@@ -1344,8 +1364,12 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           />
         );
       })}
-      {extremitySegments.map((segment) => {
-        const enabled = isJointEnabled(segment.childId) && isJointEnabled(segment.parentId);
+      {skeletonVisible && extremitySegments.map((segment) => {
+        const enabled =
+          isSkeletonJointVisible(segment.childId) &&
+          isSkeletonJointVisible(segment.parentId) &&
+          isJointEnabled(segment.childId) &&
+          isJointEnabled(segment.parentId);
         const direction = subVec2(segment.end, segment.start);
         const angleDeg = (Math.atan2(direction.y, direction.x) * 180) / Math.PI;
         const isFoot = FOOT_JOINT_SET.has(segment.childId);
@@ -1411,7 +1435,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           </g>
         );
       })}
-      {collarTrianglePoints && (
+      {skeletonVisible && collarTrianglePoints && (
         <polygon
           points={collarTrianglePoints}
           fill="rgba(37, 99, 235, 0.08)"
@@ -1422,7 +1446,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         />
       )}
 
-      {(() => {
+      {skeletonVisible && (() => {
         const neck = toDisplay(world.neck.worldPosition);
         const collar = toDisplay(world.collar.worldPosition);
         const torso = toDisplay(world.torso.worldPosition);
@@ -1485,7 +1509,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })()}
 
-      {primitiveTurnoverEnabled && (() => {
+      {skeletonVisible && primitiveTurnoverEnabled && (() => {
         const leftShoulder = world.l_shoulder;
         const rightShoulder = world.r_shoulder;
         const waistJoint = world.waist;
@@ -1512,7 +1536,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })()}
 
-      {primitiveTurnoverEnabled && (() => {
+      {skeletonVisible && primitiveTurnoverEnabled && (() => {
         const shinTargets: Array<{ knee: JointId; foot: JointId }> = [
           { knee: "l_knee", foot: "l_foot" },
           { knee: "r_knee", foot: "r_foot" },
@@ -1554,7 +1578,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           });
       })()}
 
-      {state.overlays.map((overlay) => {
+      {masksVisible && state.overlays.map((overlay) => {
         const parent = overlay.parentJointId ? world[overlay.parentJointId] : null;
         const parentWorldPosition = parent?.worldPosition ?? { x: 0, y: 0 };
         const parentWorldRotation = parent?.worldRotationDeg ?? 0;
@@ -1698,7 +1722,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {groundPins.map((pin) => (
+      {skeletonVisible && groundPins.map((pin) => (
         <line
           key={`ground-${pin.jointId}-${pin.groundY}`}
           x1={-5000 * safeScale + safeOffsetX}
@@ -1711,7 +1735,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           vectorEffect="non-scaling-stroke"
         />
       ))}
-      {!groundPins.length && (
+      {skeletonVisible && !groundPins.length && (
         <line
           x1={-5000 * safeScale + safeOffsetX}
           x2={5000 * safeScale + safeOffsetX}
@@ -1724,7 +1748,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           vectorEffect="non-scaling-stroke"
         />
       )}
-      {floorContactShadows.map(({ id, center }) => (
+      {skeletonVisible && floorContactShadows.map(({ id, center }) => (
         <ellipse
           key={`floor-shadow-${id}`}
           cx={center.x}
@@ -1736,7 +1760,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           pointerEvents="none"
         />
       ))}
-      {showBalanceOverlay && (
+      {skeletonVisible && showBalanceOverlay && (
         <>
           <line
             x1={centerOfMassDisplay.x}
@@ -1773,7 +1797,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         </>
       )}
 
-      {JOINT_IDS.map((jointId) => {
+      {skeletonVisible && JOINT_IDS.map((jointId) => {
         if (jointId === "waist") {
           return null;
         }
@@ -1784,7 +1808,11 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         const parent = world[joint.parentId];
         const start = toDisplay(parent.worldPosition);
         const end = toDisplay(joint.worldPosition);
-        const lineEnabled = isJointEnabled(jointId) && isJointEnabled(joint.parentId);
+        const lineEnabled =
+          isSkeletonJointVisible(jointId) &&
+          isSkeletonJointVisible(joint.parentId) &&
+          isJointEnabled(jointId) &&
+          isJointEnabled(joint.parentId);
         return (
           <line
             key={`${joint.parentId}-${jointId}`}
@@ -1802,8 +1830,11 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {JOINT_IDS.map((jointId) => {
+      {jointsVisible && JOINT_IDS.map((jointId) => {
         if (jointId === "root") {
+          return null;
+        }
+        if (!isJointVisible(jointId)) {
           return null;
         }
         const point = world[jointId].worldPosition;
@@ -1890,9 +1921,9 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {JOINT_IDS.map((jointId) => {
+      {jointsVisible && JOINT_IDS.map((jointId) => {
         const target = state.ikTargets[jointId];
-        if (!showIkTargets || !target?.active || !isJointEnabled(jointId)) {
+        if (!showIkTargets || !target?.active || !isJointEnabled(jointId) || !isJointVisible(jointId)) {
           return null;
         }
         const drawTarget = toDisplay({ x: target.x, y: target.y });
@@ -1939,9 +1970,9 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           </g>
         );
       })}
-      {JOINT_IDS.map((jointId) => {
+      {jointsVisible && JOINT_IDS.map((jointId) => {
         const poleTarget = state.ikPoleTargets[jointId];
-        if (!showIkTargets || !poleTarget?.active || !isJointEnabled(jointId)) {
+        if (!showIkTargets || !poleTarget?.active || !isJointEnabled(jointId) || !isJointVisible(jointId)) {
           return null;
         }
         const drawTarget = toDisplay({ x: poleTarget.x, y: poleTarget.y });
