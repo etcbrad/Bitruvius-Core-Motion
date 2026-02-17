@@ -25,5 +25,16 @@
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "include": [
+    "index.tsx",
+    "src/**/*",
+    "vite.config.ts",
+    "vitest.config.ts"
+  ],
+  "exclude": [
+    "legacy",
+    "dist",
+    "node_modules"
+  ]
 }

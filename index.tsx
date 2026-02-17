@@ -1,6 +1,7 @@
 import React from 'react';
-import ReactDOM from 'react-dom/client'; // <--- Use 'react-dom/client'
-import App from './App';
+import './src/styles.css';
+import ReactDOM from 'react-dom/client';
+import { RigCoreV2Shell } from './src/rig-adapter/RigCoreV2Shell';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -10,6 +11,6 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <RigCoreV2Shell />
   </React.StrictMode>
 );

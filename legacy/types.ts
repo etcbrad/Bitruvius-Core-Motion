@@ -24,8 +24,60 @@ export type MaskTransform = {
   y: number;
   rotation: number;
   scale: number;
-  mode: 'cover' | 'project';
+  // Optional non-uniform scaling (multiplies `scale` on that axis).
+  scaleX?: number;
+  scaleY?: number;
+  mode: 'cover' | 'project' | 'hidden';
+  // Optional geometry controls for the underlying Primitive shape (used by head, etc.).
+  geometry?: 'tapered';
+  topWidth?: number;     // Ratio of `width` at the far end (0..n).
+  bottomWidth?: number;  // Ratio of `width` at the root end (0..n).
 };
+
+export type VisualAnchor = {
+  x: number;
+  y: number;
+};
+
+export type PartVisualAnchors = {
+  parent: VisualAnchor;
+  child: VisualAnchor;
+};
+
+export type TextureViewBox = {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+};
+
+export type HardcodedAssetConfig = {
+  host_line: keyof WalkingEngineProportions;
+  anchor_point?: string;
+  anchor_attach?: 'root' | 'tip';
+  render_priority?: 'top' | 'bottom';
+  proportions?: {
+    width?: number;
+    length?: number;
+  };
+  normalized_offset?: {
+    x?: number; // Multiplied by host width.
+    y?: number; // Multiplied by host length.
+  };
+  offset?: {
+    x?: number;
+    y?: number;
+    rotation?: number;
+  };
+  texture?: string;
+  mode?: 'cover' | 'project' | 'hidden';
+  visual_logic?: 'fill_visible' | 'mask_only' | 'wireframe';
+  alpha?: number;
+  visual_anchors?: PartVisualAnchors;
+  texture_viewbox?: TextureViewBox;
+};
+
+export type HardcodedAssetsMap = Record<string, HardcodedAssetConfig>;
 
 export type WalkingEnginePose = {
   waist: number;

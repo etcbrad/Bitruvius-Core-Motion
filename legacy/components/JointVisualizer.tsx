@@ -16,8 +16,8 @@ const PIVOT_TO_PART_MAP: Record<keyof WalkingEnginePivotOffsets, keyof WalkingEn
   waist: 'waist', torso: 'torso', collar: 'collar', neck: 'head',
   l_shoulder: 'l_upper_arm', l_elbow: 'l_lower_arm', l_hand: 'l_hand',
   r_shoulder: 'r_upper_arm', r_elbow: 'r_lower_arm', r_hand: 'r_hand',
-  l_hip: 'l_upper_leg', l_knee: 'l_lower_leg', l_foot: 'l_foot', l_toe: 'l_toe',
-  r_hip: 'r_upper_leg', r_knee: 'r_lower_leg', r_foot: 'r_foot', r_toe: 'r_toe',
+  l_hip: 'l_upper_leg', l_knee: 'l_lower_leg', l_foot: 'l_foot', l_toe: 'l_foot',
+  r_hip: 'r_upper_leg', r_knee: 'r_lower_leg', r_foot: 'r_foot', r_toe: 'r_foot',
 };
 
 export const JointVisualizer: React.FC<JointVisualizerProps> = ({ jointKey, pivotOffsets, proportions, baseUnitH }) => {
