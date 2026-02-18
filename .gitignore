@@ -11,6 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
+output/
+webbit/
+web_game_playwright_client.mjs
+*.bak
 
 # Editor directories and files
 .vscode/*

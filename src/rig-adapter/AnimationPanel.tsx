@@ -1,15 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { normalizeSignedAngleDeg } from "../rig-core/graph";
-import { fromRigSnapshotV2, toRigSnapshotV2, type RigSnapshotV2 } from "../rig-core/serialize";
+import { cloneRigState, fromRigSnapshotV2, toRigSnapshotV2, type RigSnapshotV2 } from "../rig-core/serialize";
 import {
   JOINT_IDS,
-  type IkPoleTarget,
-  type IkTarget,
-  type JointId,
-  type JointState,
-  type PinConstraint,
   type RigState,
-  type SvgOverlay,
 } from "../rig-core/types";
 import type { RigAdapter } from "./useRigAdapter";
 
@@ -43,6 +37,11 @@ const MIN_AUTO_TWEEN_FRAMES = 2;
 const MAX_AUTO_TWEEN_FRAMES = 48;
 const DEFAULT_AUTO_TWEEN_FRAMES = 24;
 const DEFAULT_INTERPOLATION = 0.65;
+const DEFAULT_AUTO_RECORD_DURATION_SEC = 5;
+const MIN_AUTO_RECORD_DURATION_SEC = 1;
+const MAX_AUTO_RECORD_DURATION_SEC = 300;
+const DEFAULT_AUTO_RECORD_INTERVAL_MS = 200;
+const PLAYBACK_MAX_FRAME_DELTA_MS = 80;
 
 const createKeyframeId = (): string =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -99,48 +98,6 @@ const easeInOutCubic = (t: number): number => {
     return 1;
   }
   return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-};
-
-const clonePin = (pin: PinConstraint): PinConstraint =>
-  pin.kind === "world" ? { ...pin } : { ...pin };
-
-const cloneOverlay = (overlay: SvgOverlay): SvgOverlay => ({
-  ...overlay,
-  offset: { ...overlay.offset },
-  childOffset: { ...overlay.childOffset },
-});
-
-const cloneRigState = (state: RigState): RigState => {
-  const joints = {} as Record<JointId, JointState>;
-  const ikTargets = {} as Record<JointId, IkTarget | undefined>;
-  const ikPoleTargets = {} as Record<JointId, IkPoleTarget | undefined>;
-
-  for (const jointId of JOINT_IDS) {
-    const joint = state.joints[jointId];
-    joints[jointId] = {
-      ...joint,
-      localTranslation: { ...joint.localTranslation },
-    };
-
-    const target = state.ikTargets[jointId];
-    ikTargets[jointId] = target ? { ...target } : undefined;
-
-    const poleTarget = state.ikPoleTargets[jointId];
-    ikPoleTargets[jointId] = poleTarget ? { ...poleTarget } : undefined;
-  }
-
-  return {
-    mode: state.mode,
-    ikSolveMode: state.ikSolveMode,
-    ikStretchEnabled: state.ikStretchEnabled,
-    constraintSettings: { ...state.constraintSettings },
-    joints,
-    pins: state.pins.map(clonePin),
-    ikTargets,
-    ikPoleTargets,
-    selectedJointId: state.selectedJointId,
-    overlays: state.overlays.map(cloneOverlay),
-  };
 };
 
 const interpolateRigState = (start: RigState, end: RigState, rawT: number): RigState => {
@@ -247,11 +204,16 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
   const [targetFps, setTargetFps] = useState<number | null>(DEFAULT_TARGET_FPS);
   const [playbackTimeMs, setPlaybackTimeMs] = useState(0);
   const [status, setStatus] = useState("");
+  const [isAutoRecording, setIsAutoRecording] = useState(false);
+  const [autoRecordDurationSec, setAutoRecordDurationSec] = useState(DEFAULT_AUTO_RECORD_DURATION_SEC);
+  const [autoRecordElapsedMs, setAutoRecordElapsedMs] = useState(0);
 
   const playbackRafRef = useRef<number | null>(null);
-  const playbackStartMsRef = useRef(0);
   const lastFrameAtRef = useRef<number | null>(null);
   const playbackTimeRef = useRef(0);
+  const autoRecordRafRef = useRef<number | null>(null);
+  const autoRecordStartMsRef = useRef(0);
+  const autoRecordLastCaptureRef = useRef(0);
 
   const selectedKeyframeIndex = useMemo(
     () => keyframes.findIndex((frame) => frame.id === selectedKeyframeId),
@@ -314,8 +276,6 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
     }
   }, []);
 
-  useEffect(() => () => cancelPlayback(), [cancelPlayback]);
-
   const applyPoseAtTime = useCallback(
     (timeMs: number) => {
       if (!keyframeStates.length) {
@@ -360,24 +320,25 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
     }
 
     const tick = (nowMs: number) => {
+      const previousFrameAt = lastFrameAtRef.current;
       const frameIntervalMs = targetFps ? 1000 / targetFps : 0;
       if (
         frameIntervalMs > 0 &&
-        lastFrameAtRef.current !== null &&
-        nowMs - lastFrameAtRef.current < frameIntervalMs
+        previousFrameAt !== null &&
+        nowMs - previousFrameAt < frameIntervalMs
       ) {
         playbackRafRef.current = requestAnimationFrame(tick);
         return;
       }
       lastFrameAtRef.current = nowMs;
-
-      const elapsed = nowMs - playbackStartMsRef.current;
-      let nextTime = elapsed;
+      const rawFrameDeltaMs = previousFrameAt === null ? 0 : Math.max(0, nowMs - previousFrameAt);
+      const frameDeltaMs = Math.min(rawFrameDeltaMs, PLAYBACK_MAX_FRAME_DELTA_MS);
+      let nextTime = playbackTimeRef.current + frameDeltaMs;
       let playbackComplete = false;
 
       if (loopEnabled) {
-        nextTime = modulo(elapsed, totalDurationMs);
-      } else if (elapsed >= totalDurationMs) {
+        nextTime = modulo(nextTime, totalDurationMs);
+      } else if (nextTime >= totalDurationMs) {
         nextTime = totalDurationMs;
         playbackComplete = true;
       }
@@ -427,6 +388,71 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
     setSelectedKeyframeId(keyframe.id);
     setStatus(`${keyframe.name} captured.`);
   }, [defaultDurationMs, keyframes.length, rig.state]);
+
+  const stopAutoRecord = useCallback(() => {
+    if (autoRecordRafRef.current !== null) {
+      cancelAnimationFrame(autoRecordRafRef.current);
+      autoRecordRafRef.current = null;
+    }
+    setIsAutoRecording(false);
+    setAutoRecordElapsedMs(0);
+  }, []);
+
+  const handleToggleAutoRecord = useCallback(() => {
+    if (isAutoRecording) {
+      stopAutoRecord();
+      setStatus("Auto record stopped.");
+      return;
+    }
+
+    if (autoRecordDurationSec <= 0) {
+      setStatus("Set a recording duration greater than 0.");
+      return;
+    }
+
+    setIsPlaying(false);
+    setIsAutoRecording(true);
+    setAutoRecordElapsedMs(0);
+    autoRecordStartMsRef.current = performance.now();
+    autoRecordLastCaptureRef.current = 0;
+    setStatus(`Auto recording for ${autoRecordDurationSec}s...`);
+
+    const tick = () => {
+      const now = performance.now();
+      const elapsed = now - autoRecordStartMsRef.current;
+      const durationMs = autoRecordDurationSec * 1000;
+
+      setAutoRecordElapsedMs(Math.min(elapsed, durationMs));
+
+      // Capture every DEFAULT_AUTO_RECORD_INTERVAL_MS
+      if (elapsed - autoRecordLastCaptureRef.current >= DEFAULT_AUTO_RECORD_INTERVAL_MS) {
+        autoRecordLastCaptureRef.current = elapsed;
+        const snapshot = toRigSnapshotV2(rig.state);
+        const keyframe: AnimationKeyframe = {
+          id: createKeyframeId(),
+          name: `Pose ${keyframes.length + 1}`,
+          snapshot,
+          durationToNextMs: defaultDurationMs,
+        };
+        setKeyframes((prev) => [...prev, keyframe]);
+      }
+
+      if (elapsed >= durationMs) {
+        stopAutoRecord();
+        setStatus(`Auto record completed. Captured ${Math.round(elapsed / DEFAULT_AUTO_RECORD_INTERVAL_MS)} poses.`);
+        return;
+      }
+
+      autoRecordRafRef.current = requestAnimationFrame(tick);
+    };
+
+    autoRecordRafRef.current = requestAnimationFrame(tick);
+  }, [isAutoRecording, autoRecordDurationSec, keyframes.length, defaultDurationMs, rig.state, stopAutoRecord]);
+
+  useEffect(() => () => {
+    cancelPlayback();
+    stopAutoRecord();
+  }, [cancelPlayback, stopAutoRecord]);
 
   const handleUpdateSelected = useCallback(() => {
     if (!selectedKeyframeId) {
@@ -589,7 +615,6 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
     }
 
     lastFrameAtRef.current = null;
-    playbackStartMsRef.current = performance.now() - playbackTimeRef.current;
     setIsPlaying(true);
     setStatus("Playback running.");
   }, [applyPoseAtTime, isPlaying, keyframes.length, loopEnabled, totalDurationMs]);
@@ -638,6 +663,70 @@ export const AnimationPanel: React.FC<AnimationPanelProps> = ({ rig, active }) =
         >
           Capture Pose
         </button>
+        <button
+          type="button"
+          style={{
+            padding: "6px 8px",
+            background: isAutoRecording ? "#7f1d1d" : "#2563eb",
+            color: "white",
+            border: `1px solid ${isAutoRecording ? "#991b1b" : "#1d4ed8"}`,
+            cursor: "pointer",
+            fontSize: "11px",
+          }}
+          onClick={handleToggleAutoRecord}
+        >
+          {isAutoRecording ? "Stop Recording" : "Auto Record"}
+        </button>
+      </div>
+
+      {isAutoRecording && (
+        <div style={{ marginTop: "8px", background: "#e5e7eb", padding: "8px", borderRadius: "4px" }}>
+          <div style={{ fontSize: "11px", color: "#111111", marginBottom: "4px" }}>
+            Recording: {(autoRecordElapsedMs / 1000).toFixed(1)}s / {autoRecordDurationSec}s
+          </div>
+          <div
+            style={{
+              height: "6px",
+              background: "#d1d5db",
+              borderRadius: "3px",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                height: "100%",
+                background: "#2563eb",
+                width: `${(autoRecordElapsedMs / (autoRecordDurationSec * 1000)) * 100}%`,
+                transition: "width 0.1s linear",
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div style={{ marginTop: "8px", fontSize: "11px", color: "#6b7280" }}>Auto Record Duration (seconds)</div>
+      <input
+        type="number"
+        min={MIN_AUTO_RECORD_DURATION_SEC}
+        max={MAX_AUTO_RECORD_DURATION_SEC}
+        value={autoRecordDurationSec}
+        onChange={(event) => {
+          const val = Math.max(MIN_AUTO_RECORD_DURATION_SEC, Math.min(MAX_AUTO_RECORD_DURATION_SEC, Number(event.target.value) || 0));
+          setAutoRecordDurationSec(val);
+        }}
+        disabled={isAutoRecording}
+        style={{
+          width: "100%",
+          marginTop: "4px",
+          background: "#ffffff",
+          color: "#111111",
+          border: "1px solid #d4d4d8",
+          padding: "6px",
+          opacity: isAutoRecording ? 0.5 : 1,
+        }}
+      />
+
+      <div style={{ marginTop: "8px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px" }}>
         <button
           type="button"
           style={{

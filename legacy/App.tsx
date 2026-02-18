@@ -259,6 +259,8 @@ const App: React.FC = () => {
   const [onionSkinData, setOnionSkinData] = useState<HistoryState | null>(null);
   const [partTextures, setPartTextures] = useState<Partial<Record<keyof WalkingEngineProportions, string>>>(() => ({ ...DEFAULT_PART_TEXTURES }));
   const [maskTransforms, setMaskTransforms] = useState<Partial<Record<keyof WalkingEngineProportions, MaskTransform>>>(() => ({ ...DEFAULT_MASK_TRANSFORMS }));
+  const [maskImage, setMaskImage] = useState<string | null>(null);
+  const [maskTransform, setMaskTransform] = useState<MaskTransform>({ x: 0, y: 0, rotation: 0, scale: 1, mode: 'project' });
   const [partCustomPaths, setPartCustomPaths] = useState<Partial<Record<keyof WalkingEngineProportions, string>>>({});
   const [partScales, setPartScales] = useState<Partial<Record<keyof WalkingEngineProportions, number>>>(() => ({ ...DEFAULT_PART_SCALES }));
   const [partOffsets, setPartOffsets] = useState<Partial<Record<keyof WalkingEngineProportions, { x: number; y: number; rotation: number }>>>(() => ({ ...DEFAULT_PART_OFFSETS }));
@@ -268,8 +270,8 @@ const App: React.FC = () => {
   const [activeShapeEditorKey, setActiveShapeEditorKey] = useState<keyof WalkingEngineProportions | null>(null);
   const [expandedScaleKeys, setExpandedScaleKeys] = useState<Set<keyof WalkingEngineProportions>>(new Set());
   const [expandedShoulderKeys, setExpandedShoulderKeys] = useState<Set<keyof WalkingEngineProportions>>(new Set());
-  const [backgroundImage] = useState<string | null>(null);
-  const [backgroundTransform] = useState<MaskTransform>({ x: 0, y: 0, rotation: 0, scale: 1, mode: 'cover' });
+  const [backgroundImage, setBackgroundImage] = useState<string | null>(null);
+  const [backgroundTransform, setBackgroundTransform] = useState<MaskTransform>({ x: 0, y: 0, rotation: 0, scale: 1, mode: 'cover' });
   const [isIKEnabled, setIsIKEnabled] = useState(false);
   const [ikConstraints, setIkConstraints] = useState<Record<'l_hand_anchor' | 'r_hand_anchor', IKConstraint>>(() => ({ ...DEFAULT_IK_CONSTRAINTS }));
   const [renderMode, setRenderMode] = useState<RenderMode>('full');
@@ -754,6 +756,32 @@ const [poseDataInput, setPoseDataInput] = useState('');
     }
   };
 
+  const handleMaskUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result;
+      if (typeof result === 'string') {
+        setMaskImage(result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleBackgroundUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const result = event.target?.result;
+      if (typeof result === 'string') {
+        setBackgroundImage(result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
   const sortedFKJoints = useMemo(() => {
     return JOINT_KEYS.sort((a, b) => (a === 'waist' ? -1 : b === 'waist' ? 1 : 0));
   }, []);
@@ -1190,6 +1218,176 @@ const maskDataString = useMemo(() => JSON.stringify(maskTransforms, null, 2), [m
                             </div>
                         ))}
                     </div>
+                    <div id="mask-controls-placeholder" className="space-y-2 border border-slate-800 bg-slate-900/50 rounded-lg p-3 text-slate-200">
+                        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-widest">
+                            <span>Live Mask Overlay</span>
+                            <button
+                                onClick={() => setMaskImage(null)}
+                                className="text-[9px] px-2 py-0.5 border border-red-600 rounded uppercase hover:bg-red-600/80 transition-colors"
+                            >
+                                Remove Mask
+                            </button>
+                        </div>
+                        <div className="flex gap-2">
+                            <label htmlFor="mask-upload" className="flex-1 text-[10px] px-2 py-1 border border-slate-700 rounded uppercase text-center cursor-pointer hover:bg-slate-800 transition-colors">
+                                Upload Mask
+                                <input id="mask-upload" type="file" accept="image/*" className="hidden" onChange={handleMaskUpload} />
+                            </label>
+                            <button
+                                onClick={() => setMaskTransform({ x: 0, y: 0, rotation: 0, scale: 1, mode: 'project' })}
+                                className="text-[9px] px-2 py-1 border border-slate-700 rounded uppercase hover:bg-slate-800 transition-colors"
+                            >
+                                Reset Transform
+                            </button>
+                        </div>
+                        <div className="space-y-2 text-slate-300">
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>X Offset</span>
+                                    <span>{maskTransform.x.toFixed(1)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-500"
+                                    max="500"
+                                    step="0.5"
+                                    value={maskTransform.x}
+                                    onChange={e => setMaskTransform(prev => ({ ...prev, x: parseFloat(e.target.value) }))}
+                                    className="w-full accent-emerald-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Y Offset</span>
+                                    <span>{maskTransform.y.toFixed(1)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-500"
+                                    max="500"
+                                    step="0.5"
+                                    value={maskTransform.y}
+                                    onChange={e => setMaskTransform(prev => ({ ...prev, y: parseFloat(e.target.value) }))}
+                                    className="w-full accent-violet-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Rotation</span>
+                                    <span>{maskTransform.rotation.toFixed(0)}°</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-180"
+                                    max="180"
+                                    step="1"
+                                    value={maskTransform.rotation}
+                                    onChange={e => setMaskTransform(prev => ({ ...prev, rotation: parseFloat(e.target.value) }))}
+                                    className="w-full accent-purple-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Scale</span>
+                                    <span>{maskTransform.scale.toFixed(2)}x</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0.5"
+                                    max="3"
+                                    step="0.05"
+                                    value={maskTransform.scale}
+                                    onChange={e => setMaskTransform(prev => ({ ...prev, scale: parseFloat(e.target.value) }))}
+                                    className="w-full accent-pink-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                        </div>
+                    </div>
+                    <div id="background-controls-placeholder" className="space-y-2 border border-slate-800 bg-slate-900/50 rounded-lg p-3 text-slate-200">
+                        <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-widest">
+                            <span>Background Image</span>
+                            <button
+                                onClick={() => setBackgroundImage(null)}
+                                className="text-[9px] px-2 py-0.5 border border-red-600 rounded uppercase hover:bg-red-600/80 transition-colors"
+                            >
+                                Remove Background
+                            </button>
+                        </div>
+                        <div className="flex gap-2">
+                            <label htmlFor="background-upload" className="flex-1 text-[10px] px-2 py-1 border border-slate-700 rounded uppercase text-center cursor-pointer hover:bg-slate-800 transition-colors">
+                                Upload Background
+                                <input id="background-upload" type="file" accept="image/*" className="hidden" onChange={handleBackgroundUpload} />
+                            </label>
+                            <button
+                                onClick={() => setBackgroundTransform({ x: 0, y: 0, rotation: 0, scale: 1, mode: 'cover' })}
+                                className="text-[9px] px-2 py-1 border border-slate-700 rounded uppercase hover:bg-slate-800 transition-colors"
+                            >
+                                Reset Transform
+                            </button>
+                        </div>
+                        <div className="space-y-2 text-slate-300">
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>X Offset</span>
+                                    <span>{backgroundTransform.x.toFixed(0)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-1000"
+                                    max="1000"
+                                    step="1"
+                                    value={backgroundTransform.x}
+                                    onChange={e => setBackgroundTransform(prev => ({ ...prev, x: parseFloat(e.target.value) }))}
+                                    className="w-full accent-emerald-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Y Offset</span>
+                                    <span>{backgroundTransform.y.toFixed(0)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-1000"
+                                    max="1000"
+                                    step="1"
+                                    value={backgroundTransform.y}
+                                    onChange={e => setBackgroundTransform(prev => ({ ...prev, y: parseFloat(e.target.value) }))}
+                                    className="w-full accent-violet-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Rotation</span>
+                                    <span>{backgroundTransform.rotation.toFixed(0)}°</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="-360"
+                                    max="360"
+                                    step="1"
+                                    value={backgroundTransform.rotation}
+                                    onChange={e => setBackgroundTransform(prev => ({ ...prev, rotation: parseFloat(e.target.value) }))}
+                                    className="w-full accent-purple-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                            <div className="space-y-1">
+                                <div className="flex items-center justify-between text-[8px] uppercase text-slate-400">
+                                    <span>Scale</span>
+                                    <span>{backgroundTransform.scale.toFixed(2)}x</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="0.2"
+                                    max="5"
+                                    step="0.05"
+                                    value={backgroundTransform.scale}
+                                    onChange={e => setBackgroundTransform(prev => ({ ...prev, scale: parseFloat(e.target.value) }))}
+                                    className="w-full accent-pink-500 h-1 cursor-ew-resize"
+                                />
+                            </div>
+                        </div>
+                    </div>
                 </div>
             )}
             {activeControlTab === 'layers' && (
@@ -1387,15 +1585,24 @@ const maskDataString = useMemo(() => JSON.stringify(maskTransforms, null, 2), [m
               <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse"><rect width="100" height="100" fill="url(#smallGrid)"/><path d="M 100 0 L 0 0 0 100" fill="none" stroke="#d1d5db" strokeWidth="1"/></pattern>
           </defs>
           <rect x="-2000" y="-2000" width="4000" height="4000" fill="#f3f4f6" />
-          {backgroundImage && (<image href={backgroundImage} x="-1000" y="-1000" width="2000" height="2000" transform={`translate(${backgroundTransform.x}, ${backgroundTransform.y}) rotate(${backgroundTransform.rotation}) scale(${backgroundTransform.scale})`} />)}
+          {backgroundImage && (
+            <image
+              href={backgroundImage}
+              x="-500"
+              y="-500"
+              width="1000"
+              height="1000"
+              transform={`translate(${backgroundTransform.x}, ${backgroundTransform.y}) rotate(${backgroundTransform.rotation}) scale(${backgroundTransform.scale})`}
+            />
+          )}
           <g transform={`translate(${physicsState.position.x}, ${physicsState.position.y}) rotate(${bodyRotation})`}>
             <g transform={`scale(${figureScale})`}>
               {staticGhostPose && <Mannequin pose={RESTING_BASE_POSE} pivotOffsets={staticGhostPose} props={props} isGhost={true} ghostOpacity={0.2} showPivots={false} showLabels={false} baseUnitH={baseH} onAnchorMouseDown={()=>{}} onBodyMouseDown={()=>{}} draggingBoneKey={null} selectedBoneKeys={new Set()} isPaused={true} partScales={partScales} partOffsets={partOffsets} partZOrder={partZOrder} headpieceContrastLevel={headpieceContrastLevel} anchorFitEnabled={anchorFitEnabled} visualAnchorOverrides={visualAnchorOverrides} textureViewBoxOverrides={textureViewBoxOverrides} showPrimitives={renderConstraints.showPrimitives} />}
               {onionSkinData && <Mannequin pose={RESTING_BASE_POSE} pivotOffsets={onionSkinData.pivotOffsets} props={onionSkinData.props} isGhost={true} ghostOpacity={0.3} showPivots={false} showLabels={false} baseUnitH={baseH} onAnchorMouseDown={()=>{}} onBodyMouseDown={()=>{}} draggingBoneKey={null} selectedBoneKeys={new Set()} isPaused={true} partScales={partScales} partOffsets={partOffsets} partZOrder={partZOrder} headpieceContrastLevel={headpieceContrastLevel} anchorFitEnabled={anchorFitEnabled} visualAnchorOverrides={visualAnchorOverrides} textureViewBoxOverrides={textureViewBoxOverrides} showPrimitives={renderConstraints.showPrimitives} />}
-              <Mannequin 
-                pose={RESTING_BASE_POSE} 
-                pivotOffsets={previewPivotOffsets || pivotOffsets} 
-                props={props} 
+                <Mannequin 
+                    pose={RESTING_BASE_POSE} 
+                    pivotOffsets={previewPivotOffsets || pivotOffsets} 
+                    props={props} 
                 showPivots={isCalibrated && showFKRig} 
                 showLabels={showLabels} 
                 showRig={shouldShowRig}
@@ -1418,9 +1625,11 @@ const maskDataString = useMemo(() => JSON.stringify(maskTransforms, null, 2), [m
                 draggingBoneKey={draggingBoneKey} 
                 selectedBoneKeys={new Set()} 
                 isPaused={true} 
-                partTextures={partTextures} 
-                maskTransforms={maskTransforms} 
-                partCustomPaths={partCustomPaths}
+                    partTextures={partTextures} 
+                    maskImage={maskImage}
+                    maskTransform={maskTransform}
+                    maskTransforms={maskTransforms} 
+                    partCustomPaths={partCustomPaths}
                 partScales={partScales}
                 partOffsets={partOffsets}
                 onPositionsUpdate={setAllJointPositions} 

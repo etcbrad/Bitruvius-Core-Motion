@@ -20,6 +20,8 @@ import {
   scaleVec2,
   subVec2,
 } from "../graph";
+import { sortPinsByJointDepth } from "../pins";
+import { resolveSoftStretchRatio, type SoftStretchConfig } from "./stretch";
 
 export type FabrikSolveInput = {
   chain: JointId[];
@@ -32,6 +34,7 @@ export type FabrikSolveInput = {
   maxIterations: number;
   epsilon: number;
   allowStretch?: boolean;
+  softStretch?: Partial<SoftStretchConfig>;
 };
 
 export type FabrikSolveResult = {
@@ -127,8 +130,13 @@ const enforceJointLimits = (
 const applyChainPins = (chain: JointId[], positions: Vec2[], pins: PinConstraint[]): void => {
   const indexByJoint = new Map<JointId, number>();
   chain.forEach((jointId, index) => indexByJoint.set(jointId, index));
+  const depthByJoint: Partial<Record<JointId, number>> = {};
+  chain.forEach((jointId, index) => {
+    depthByJoint[jointId] = index;
+  });
+  const orderedPins = sortPinsByJointDepth(pins, depthByJoint);
 
-  for (const pin of pins) {
+  for (const pin of orderedPins) {
     const chainIndex = indexByJoint.get(pin.jointId);
     if (chainIndex === undefined) {
       continue;
@@ -205,6 +213,7 @@ export const solveFabrikChain = ({
   maxIterations,
   epsilon,
   allowStretch = false,
+  softStretch,
 }: FabrikSolveInput): FabrikSolveResult => {
   if (chain.length < 2) {
     return {
@@ -227,10 +236,17 @@ export const solveFabrikChain = ({
   const distToTargetFromRoot = distanceVec2(root, target);
   const baseChainLength = baseSegmentLengths.reduce((acc, value) => acc + value, 0);
 
-  const segmentLengths =
-    allowStretch && baseChainLength > 1e-8 && distToTargetFromRoot > baseChainLength + 1e-8
-      ? baseSegmentLengths.map((length) => Math.max(1e-5, length * (distToTargetFromRoot / baseChainLength)))
-      : baseSegmentLengths;
+  const stretchRatio =
+    allowStretch && baseChainLength > 1e-8
+      ? resolveSoftStretchRatio(distToTargetFromRoot, baseChainLength, {
+          enabled: true,
+          ...softStretch,
+        })
+      : 1;
+
+  const segmentLengths = baseSegmentLengths.map((length) =>
+    Math.max(1e-5, length * stretchRatio)
+  );
 
   const chainLength = segmentLengths.reduce((acc, value) => acc + value, 0);
   const reachable = distToTargetFromRoot <= chainLength + 1e-8;
@@ -275,7 +291,7 @@ export const solveFabrikChain = ({
       positions[index] = addVec2(positions[index + 1], scaleVec2(direction, segmentLengths[index]));
     }
 
-    root = projectRootToPins(root, chain[0], pins);
+    root = projectRootToPins(positions[0], chain[0], pins);
     positions[0] = { ...root };
     for (let index = 1; index < positions.length; index += 1) {
       const direction = safeDirection(positions[index - 1], positions[index]);

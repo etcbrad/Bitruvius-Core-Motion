@@ -1,37 +1,20 @@
-import { useCallback, useMemo, useReducer, type Dispatch } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, type Dispatch } from "react";
 import {
+  BackgroundShadowSettings,
   ConstraintSettings,
-  DEFAULT_CONSTRAINT_SETTINGS,
-  IkSolveMode,
   JointId,
   PinConstraint,
   RigAction,
   RigState,
   RigWorldTransforms,
+  SceneImageLayer,
   SvgOverlay,
-  createInitialRigState,
+  Vec2,
 } from "../rig-core/types";
 import { computeWorldTransforms } from "../rig-core/graph";
 import { applyPinsToWorldTransforms } from "../rig-core/pins";
 import { rigReducer, createInitialRigReducerState, type RigReducerState } from "../rig-core/reducer";
-import { DEFAULT_OVERLAYS } from "../rig-core/defaultOverlays";
-
-const baseInitialState = createInitialRigState();
-
-const DEFAULT_RIG_SNAPSHOT: RigState = {
-  mode: "FK",
-  ikSolveMode: "single_chain",
-  ikStretchEnabled: false,
-  constraintSettings: {
-    ...DEFAULT_CONSTRAINT_SETTINGS,
-  },
-  joints: baseInitialState.joints,
-  pins: baseInitialState.pins,
-  ikTargets: baseInitialState.ikTargets,
-  ikPoleTargets: baseInitialState.ikPoleTargets,
-  overlays: DEFAULT_OVERLAYS,
-  selectedJointId: "xiphoid",
-};
+const DRAG_MOVE_EPSILON = 1e-3;
 
 export type RigAdapter = {
   state: RigReducerState;
@@ -40,8 +23,10 @@ export type RigAdapter = {
   hydrate: (nextState: RigState) => void;
   setMode: (mode: RigState["mode"]) => void;
   setIkSolveMode: (ikSolveMode: RigState["ikSolveMode"]) => void;
+  setIkSolver: (solver: RigState["ikSolver"]) => void;
   setIkStretchEnabled: (enabled: boolean) => void;
   setConstraintSettings: (patch: Partial<ConstraintSettings>) => void;
+  setSkeletonVersion: (version: RigState["skeletonVersion"]) => void;
   selectJoint: (jointId: JointId | null) => void;
   fkSetRotationSlider: (jointId: JointId, sliderDeg: number) => void;
   fkSetRotationText: (jointId: JointId, rawDeg: number) => void;
@@ -62,14 +47,73 @@ export type RigAdapter = {
   removeOverlay: (overlayId: string) => void;
   placeOverlayOnJoint: (overlayId: string, jointId: JointId) => void;
   resetOverlayTransform: (overlayId: string) => void;
+  setSceneLayerImage: (
+    layer: "background" | "foreground",
+    dataUrl: string | null,
+    name?: string
+  ) => void;
+  updateSceneLayer: (layer: "background" | "foreground", patch: Partial<SceneImageLayer>) => void;
+  updateBackgroundShadow: (patch: Partial<BackgroundShadowSettings>) => void;
+  resetSceneLayer: (layer: "background" | "foreground" | "all") => void;
 };
 
 export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
-  const seedState: RigState = {
-    ...DEFAULT_RIG_SNAPSHOT,
-    ...(initialState ?? {}),
-  };
-  const [state, dispatch] = useReducer(rigReducer, seedState, createInitialRigReducerState);
+  const [state, dispatch] = useReducer(rigReducer, initialState, createInitialRigReducerState);
+  const pendingDragMoveRef = useRef<Vec2 | null>(null);
+  const lastCommittedDragMoveRef = useRef<Vec2 | null>(null);
+  const dragMoveRafRef = useRef<number | null>(null);
+
+  const flushPendingDragMove = useCallback(() => {
+    const pending = pendingDragMoveRef.current;
+    if (!pending) {
+      return;
+    }
+    const last = lastCommittedDragMoveRef.current;
+    if (
+      last &&
+      Math.abs(pending.x - last.x) <= DRAG_MOVE_EPSILON &&
+      Math.abs(pending.y - last.y) <= DRAG_MOVE_EPSILON
+    ) {
+      pendingDragMoveRef.current = null;
+      return;
+    }
+
+    pendingDragMoveRef.current = null;
+    lastCommittedDragMoveRef.current = { x: pending.x, y: pending.y };
+    dispatch({ type: "DRAG_MOVE", x: pending.x, y: pending.y });
+  }, [dispatch]);
+
+  const cancelScheduledDragMoveFlush = useCallback(() => {
+    if (dragMoveRafRef.current === null) {
+      return;
+    }
+    if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(dragMoveRafRef.current);
+    }
+    dragMoveRafRef.current = null;
+  }, []);
+
+  const schedulePendingDragMoveFlush = useCallback(() => {
+    if (dragMoveRafRef.current !== null) {
+      return;
+    }
+    if (typeof window === "undefined" || typeof window.requestAnimationFrame !== "function") {
+      flushPendingDragMove();
+      return;
+    }
+    dragMoveRafRef.current = window.requestAnimationFrame(() => {
+      dragMoveRafRef.current = null;
+      flushPendingDragMove();
+    });
+  }, [flushPendingDragMove]);
+
+  useEffect(() => {
+    return () => {
+      cancelScheduledDragMoveFlush();
+      pendingDragMoveRef.current = null;
+      lastCommittedDragMoveRef.current = null;
+    };
+  }, [cancelScheduledDragMoveFlush]);
 
   const worldTransforms = useMemo(() => {
     const world = computeWorldTransforms(state.joints);
@@ -97,6 +141,13 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
     [dispatch]
   );
 
+  const setIkSolver = useCallback(
+    (solver: RigState["ikSolver"]) => {
+      dispatch({ type: "SET_IK_SOLVER", solver });
+    },
+    [dispatch]
+  );
+
   const setIkStretchEnabled = useCallback(
     (enabled: boolean) => {
       dispatch({ type: "SET_IK_STRETCH_ENABLED", enabled });
@@ -107,6 +158,13 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
   const setConstraintSettings = useCallback(
     (patch: Partial<ConstraintSettings>) => {
       dispatch({ type: "SET_CONSTRAINT_SETTINGS", patch });
+    },
+    [dispatch]
+  );
+
+  const setSkeletonVersion = useCallback(
+    (version: RigState["skeletonVersion"]) => {
+      dispatch({ type: "SET_SKELETON_VERSION", version });
     },
     [dispatch]
   );
@@ -233,23 +291,31 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
 
   const dragStart = useCallback(
     (jointId: JointId, x: number, y: number, handle: "joint" | "target" | "bone") => {
+      cancelScheduledDragMoveFlush();
+      pendingDragMoveRef.current = null;
+      lastCommittedDragMoveRef.current = { x, y };
       dispatch({ type: "DRAG_START", jointId, x, y, handle });
     },
-    [dispatch]
+    [cancelScheduledDragMoveFlush, dispatch]
   );
 
   const dragMove = useCallback(
     (x: number, y: number) => {
-      dispatch({ type: "DRAG_MOVE", x, y });
+      pendingDragMoveRef.current = { x, y };
+      schedulePendingDragMoveFlush();
     },
-    [dispatch]
+    [schedulePendingDragMoveFlush]
   );
 
   const dragEnd = useCallback(
     () => {
+      cancelScheduledDragMoveFlush();
+      flushPendingDragMove();
+      pendingDragMoveRef.current = null;
+      lastCommittedDragMoveRef.current = null;
       dispatch({ type: "DRAG_END" });
     },
-    [dispatch]
+    [cancelScheduledDragMoveFlush, dispatch, flushPendingDragMove]
   );
 
   const addOverlay = useCallback(
@@ -287,6 +353,34 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
     [dispatch]
   );
 
+  const setSceneLayerImage = useCallback(
+    (layer: "background" | "foreground", dataUrl: string | null, name?: string) => {
+      dispatch({ type: "SCENE_LAYER_SET_IMAGE", layer, dataUrl, name });
+    },
+    [dispatch]
+  );
+
+  const updateSceneLayer = useCallback(
+    (layer: "background" | "foreground", patch: Partial<SceneImageLayer>) => {
+      dispatch({ type: "SCENE_LAYER_UPDATE", layer, patch });
+    },
+    [dispatch]
+  );
+
+  const updateBackgroundShadow = useCallback(
+    (patch: Partial<BackgroundShadowSettings>) => {
+      dispatch({ type: "SCENE_BACKGROUND_SHADOW_UPDATE", patch });
+    },
+    [dispatch]
+  );
+
+  const resetSceneLayer = useCallback(
+    (layer: "background" | "foreground" | "all") => {
+      dispatch({ type: "SCENE_LAYER_RESET", layer });
+    },
+    [dispatch]
+  );
+
   return {
     state,
     worldTransforms,
@@ -294,6 +388,7 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
     hydrate,
     setMode,
     setIkSolveMode,
+    setIkSolver,
     setIkStretchEnabled,
     setConstraintSettings,
     selectJoint,
@@ -316,5 +411,10 @@ export const useRigAdapter = (initialState?: Partial<RigState>): RigAdapter => {
     removeOverlay,
     placeOverlayOnJoint,
     resetOverlayTransform,
+    setSceneLayerImage,
+    updateSceneLayer,
+    updateBackgroundShadow,
+    resetSceneLayer,
+    setSkeletonVersion,
   };
 };

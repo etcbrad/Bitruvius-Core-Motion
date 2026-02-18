@@ -1,5 +1,8 @@
 export type ControlMode = "FK" | "IK";
 export type IkSolveMode = "single_chain" | "limbs_only" | "whole_body_graph";
+export type IkSolverId = "fabrik" | "ccd" | "hybrid";
+
+export type SkeletonVersion = "v1" | "v2";
 
 export type JointId =
   | "root"
@@ -22,6 +25,64 @@ export type JointId =
   | "r_foot";
 
 export type Vec2 = { x: number; y: number };
+
+export type LayerBlendMode =
+  | "normal"
+  | "multiply"
+  | "screen"
+  | "overlay"
+  | "darken"
+  | "lighten"
+  | "color-dodge"
+  | "color-burn"
+  | "hard-light"
+  | "soft-light";
+
+export type ImageFilterSettings = {
+  brightness: number;
+  contrast: number;
+  saturate: number;
+  hueRotateDeg: number;
+  blurPx: number;
+  grayscale: number;
+  sepia: number;
+  invert: number;
+};
+
+export type ImageLayerTransform = {
+  x: number;
+  y: number;
+  rotation: number;
+  scaleX: number;
+  scaleY: number;
+};
+
+export type SceneLayerFitMode = "cover" | "contain" | "stretch";
+
+export type SceneImageLayer = {
+  name: string;
+  dataUrl: string | null;
+  visible: boolean;
+  alpha: number;
+  blendMode: LayerBlendMode;
+  filters: ImageFilterSettings;
+  transform: ImageLayerTransform;
+  fitMode: SceneLayerFitMode;
+};
+
+export type BackgroundShadowSettings = {
+  enabled: boolean;
+  alpha: number;
+  blurPx: number;
+  offsetX: number;
+  offsetY: number;
+};
+
+export type RigSceneLayers = {
+  background: SceneImageLayer;
+  foreground: SceneImageLayer;
+  backgroundShadow: BackgroundShadowSettings;
+};
 
 export type JointState = {
   id: JointId;
@@ -55,26 +116,33 @@ export type ConstraintSettings = {
   lockGroundedAnklesX: boolean;
   releaseGroundedAnkleWhenLegLifts: boolean;
   clampGroundedIkTargetReach: boolean;
+  fkFrictionOff: boolean;
+  ikFrictionOff: boolean;
 };
 
 export type RigState = {
   mode: ControlMode;
   ikSolveMode: IkSolveMode;
+  ikSolver: IkSolverId;
   ikStretchEnabled: boolean;
   constraintSettings: ConstraintSettings;
+  skeletonVersion: SkeletonVersion;
   joints: Record<JointId, JointState>;
   pins: PinConstraint[];
   ikTargets: Record<JointId, IkTarget | undefined>;
   ikPoleTargets: Record<JointId, IkPoleTarget | undefined>;
   selectedJointId: JointId | null;
   overlays: SvgOverlay[];
+  sceneLayers: RigSceneLayers;
 };
 
 export type RigAction =
   | { type: "SET_MODE"; mode: ControlMode }
   | { type: "SET_IK_SOLVE_MODE"; ikSolveMode: IkSolveMode }
+  | { type: "SET_IK_SOLVER"; solver: IkSolverId }
   | { type: "SET_IK_STRETCH_ENABLED"; enabled: boolean }
   | { type: "SET_CONSTRAINT_SETTINGS"; patch: Partial<ConstraintSettings> }
+  | { type: "SET_SKELETON_VERSION"; version: SkeletonVersion }
   | { type: "SELECT_JOINT"; jointId: JointId | null }
   | { type: "FK_SET_ROTATION_SLIDER"; jointId: JointId; sliderDeg: number }
   | { type: "FK_SET_ROTATION_TEXT"; jointId: JointId; rawDeg: number }
@@ -93,6 +161,18 @@ export type RigAction =
   | { type: "OVERLAY_REMOVE"; overlayId: string }
   | { type: "OVERLAY_PLACE_ON_JOINT"; overlayId: string; jointId: JointId }
   | { type: "OVERLAY_RESET"; overlayId: string }
+  | { type: "SCENE_LAYER_SET_IMAGE"; layer: "background" | "foreground"; dataUrl: string | null; name?: string }
+  | { type: "SCENE_LAYER_UPDATE"; layer: "background" | "foreground"; patch: Partial<SceneImageLayer> }
+  | { type: "SCENE_BACKGROUND_SHADOW_UPDATE"; patch: Partial<BackgroundShadowSettings> }
+  | { type: "SCENE_LAYER_RESET"; layer: "background" | "foreground" | "all" }
+  | {
+      type: "RUNTIME_DAMP_PELVIS";
+      rootY: number;
+      waistTarget: Vec2;
+      lHipTarget: Vec2;
+      rHipTarget: Vec2;
+      alpha: number;
+    }
   | { type: "HYDRATE_STATE"; state: RigState };
 
 export type JointWorldTransform = {
@@ -143,6 +223,8 @@ export type SvgOverlay = {
   childJointId: JointId | null;
   offset: { x: number; y: number };
   childOffset: Vec2;
+  segmentRestLength: number | null;
+  segmentRestAngleDeg: number | null;
   rotation: number;
   scale: number;
   flipX: boolean;
@@ -150,6 +232,8 @@ export type SvgOverlay = {
   visible: boolean;
   alpha: number;
   feather: number;
+  blendMode: LayerBlendMode;
+  filters: ImageFilterSettings;
 };
 
 export const DEFAULT_SOLVER_SETTINGS: RigSolverSettings = {
@@ -165,7 +249,68 @@ export const DEFAULT_CONSTRAINT_SETTINGS: ConstraintSettings = {
   lockGroundedAnklesX: true,
   releaseGroundedAnkleWhenLegLifts: true,
   clampGroundedIkTargetReach: true,
+  fkFrictionOff: false,
+  ikFrictionOff: false,
 };
+
+export const DEFAULT_IMAGE_FILTER_SETTINGS: ImageFilterSettings = {
+  brightness: 1,
+  contrast: 1,
+  saturate: 1,
+  hueRotateDeg: 0,
+  blurPx: 0,
+  grayscale: 0,
+  sepia: 0,
+  invert: 0,
+};
+
+export const DEFAULT_BACKGROUND_SCENE_LAYER: SceneImageLayer = {
+  name: "Background",
+  dataUrl: null,
+  visible: true,
+  alpha: 1,
+  blendMode: "normal",
+  filters: { ...DEFAULT_IMAGE_FILTER_SETTINGS },
+  transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+  fitMode: "cover",
+};
+
+export const DEFAULT_FOREGROUND_SCENE_LAYER: SceneImageLayer = {
+  name: "Foreground",
+  dataUrl: null,
+  visible: true,
+  alpha: 0.65,
+  blendMode: "screen",
+  filters: {
+    ...DEFAULT_IMAGE_FILTER_SETTINGS,
+    brightness: 1.12,
+    blurPx: 0.8,
+  },
+  transform: { x: 0, y: 0, rotation: 0, scaleX: 1, scaleY: 1 },
+  fitMode: "cover",
+};
+
+export const DEFAULT_BACKGROUND_SHADOW_SETTINGS: BackgroundShadowSettings = {
+  enabled: true,
+  alpha: 0.22,
+  blurPx: 12,
+  offsetX: 0,
+  offsetY: 4,
+};
+
+export const createDefaultSceneLayers = (): RigSceneLayers => ({
+  background: {
+    ...DEFAULT_BACKGROUND_SCENE_LAYER,
+    filters: { ...DEFAULT_BACKGROUND_SCENE_LAYER.filters },
+    transform: { ...DEFAULT_BACKGROUND_SCENE_LAYER.transform },
+  },
+  foreground: {
+    ...DEFAULT_FOREGROUND_SCENE_LAYER,
+    filters: { ...DEFAULT_FOREGROUND_SCENE_LAYER.filters },
+    transform: { ...DEFAULT_FOREGROUND_SCENE_LAYER.transform },
+  },
+  backgroundShadow: { ...DEFAULT_BACKGROUND_SHADOW_SETTINGS },
+});
 
 export const JOINT_IDS: JointId[] = [
   "root",
@@ -327,10 +472,11 @@ export const createDefaultJoints = (): Record<JointId, JointState> => {
       { x: -forearmOffsetX, y: forearmOffsetY },
       lengths.hand
     ),
-    l_hip: makeJoint("l_hip", "waist", { x: -hipHalfSeparation, y: 0 }, lengths.upperLeg),
+    // Legs originate from the body center (root/navel pivot) for more natural IK freedom.
+    l_hip: makeJoint("l_hip", "root", { x: -hipHalfSeparation, y: 0 }, lengths.upperLeg),
     l_knee: makeJoint("l_knee", "l_hip", { x: -thighOffsetX, y: thighOffsetY }, lengths.lowerLeg),
     l_foot: makeJoint("l_foot", "l_knee", { x: 0, y: lengths.lowerLeg }, lengths.foot),
-    r_hip: makeJoint("r_hip", "waist", { x: hipHalfSeparation, y: 0 }, lengths.upperLeg),
+    r_hip: makeJoint("r_hip", "root", { x: hipHalfSeparation, y: 0 }, lengths.upperLeg),
     r_knee: makeJoint("r_knee", "r_hip", { x: thighOffsetX, y: thighOffsetY }, lengths.lowerLeg),
     r_foot: makeJoint("r_foot", "r_knee", { x: 0, y: lengths.lowerLeg }, lengths.foot),
   };
@@ -395,12 +541,46 @@ const createDefaultPins = (joints: Record<JointId, JointState>): PinConstraint[]
   },
 ];
 
+const withDefaultFilterSettings = (filters?: Partial<ImageFilterSettings> | null): ImageFilterSettings => ({
+  ...DEFAULT_IMAGE_FILTER_SETTINGS,
+  ...(filters ?? {}),
+});
+
+const withDefaultLayerTransform = (transform?: Partial<ImageLayerTransform> | null): ImageLayerTransform => ({
+  ...DEFAULT_BACKGROUND_SCENE_LAYER.transform,
+  ...(transform ?? {}),
+});
+
+const mergeSceneLayer = (
+  fallback: SceneImageLayer,
+  incoming?: Partial<SceneImageLayer> | null
+): SceneImageLayer => ({
+  ...fallback,
+  ...(incoming ?? {}),
+  filters: withDefaultFilterSettings(incoming?.filters),
+  transform: withDefaultLayerTransform(incoming?.transform),
+});
+
+const mergeSceneLayers = (incoming?: Partial<RigSceneLayers>): RigSceneLayers => {
+  const defaults = createDefaultSceneLayers();
+  return {
+    background: mergeSceneLayer(defaults.background, incoming?.background),
+    foreground: mergeSceneLayer(defaults.foreground, incoming?.foreground),
+    backgroundShadow: {
+      ...defaults.backgroundShadow,
+      ...(incoming?.backgroundShadow ?? {}),
+    },
+  };
+};
+
 export const createInitialRigState = (seed?: Partial<RigState>): RigState => {
   const joints = seed?.joints ?? createDefaultJoints();
   return {
     mode: seed?.mode ?? "FK",
     ikSolveMode: seed?.ikSolveMode ?? "single_chain",
+    ikSolver: seed?.ikSolver ?? "fabrik",
     ikStretchEnabled: seed?.ikStretchEnabled ?? false,
+    skeletonVersion: seed?.skeletonVersion ?? "v2",
     constraintSettings: {
       ...DEFAULT_CONSTRAINT_SETTINGS,
       ...(seed?.constraintSettings ?? {}),
@@ -411,5 +591,6 @@ export const createInitialRigState = (seed?: Partial<RigState>): RigState => {
     ikPoleTargets: seed?.ikPoleTargets ?? createEmptyIkPoleTargets(),
     selectedJointId: seed?.selectedJointId ?? "xiphoid",
     overlays: seed?.overlays ?? [],
+    sceneLayers: mergeSceneLayers(seed?.sceneLayers),
   };
 };

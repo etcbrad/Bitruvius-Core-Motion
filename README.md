@@ -5,7 +5,7 @@
 # Bitruvius Core Motion
 
 Active runtime lives in `src/rig-adapter` + `src/rig-core`.
-Legacy runtime is preserved under `legacy/` for reference only.
+Legacy runtime is isolated under `legacy/` for migration reference and sandbox experiments only; it is not part of the active runtime.
 
 Architecture and roadmap:
 - `/Users/bradleygeiser/Updated Model Bitruvius/Bitruvius-Core-Motion/docs/ARCHITECTURE.md`

@@ -10,7 +10,19 @@ import {
   subVec2,
 } from "../rig-core/graph";
 import { applyPinsToWorldTransforms } from "../rig-core/pins";
-import { JointId, JOINT_IDS, PinConstraint, RigState, Vec2 } from "../rig-core/types";
+import { resolveOverlayRenderPose } from "../rig-core/overlay";
+import {
+  ImageFilterSettings,
+  JointId,
+  JOINT_IDS,
+  JointState,
+  LayerBlendMode,
+  PinConstraint,
+  RigSceneLayers,
+  RigState,
+  Vec2,
+} from "../rig-core/types";
+import { ACTIVATION_PARENT_BY_CHILD } from "../rig-core/topology";
 
 export type SkeletonDisplayTransform = {
   offsetX: number;
@@ -18,13 +30,32 @@ export type SkeletonDisplayTransform = {
   scale: number;
 };
 
+export type RotationPreviewPath = {
+  jointId: JointId;
+  pivot: Vec2;
+  points: Vec2[];
+};
+
+export type SkeletonViewportExportLayerMode =
+  | "composite"
+  | "skeleton"
+  | "joints"
+  | "masks"
+  | "background"
+  | "foreground";
+
 type SkeletonViewportProps = {
   state: RigState;
   width?: number | string;
   height?: number | string;
   className?: string;
   primitiveTurnoverEnabled?: boolean;
+  sceneLayers?: RigSceneLayers;
+  renderIntent?: "interactive" | "export";
+  exportLayerMode?: SkeletonViewportExportLayerMode;
+  canvasBackground?: string;
   displayTransform?: SkeletonDisplayTransform;
+  limbStacking?: "left_over_right" | "right_over_left";
   rootAnchorUseGroundX?: boolean;
   rootAnchorUseGroundY?: boolean;
   cameraZoomPreset?: "far" | "medium" | "close";
@@ -38,6 +69,10 @@ type SkeletonViewportProps = {
   jointVisibilityMap?: Partial<Record<JointId, boolean>>;
   skeletonVisibilityMap?: Partial<Record<JointId, boolean>>;
   overlayInteractionEnabled?: boolean;
+  manakinMode?: boolean;
+  parallaxLayersEnabled?: boolean;
+  rotationPreview?: RotationPreviewPath | null;
+  targetDisplayPositions?: Partial<Record<JointId, Vec2>>;
   onJointPointerDown?: (
     jointId: JointId,
     x: number,
@@ -71,6 +106,11 @@ type SkeletonViewportProps = {
   ) => void;
   onPoleTargetDrag?: (
     jointId: JointId,
+    x: number,
+    y: number,
+    event: React.PointerEvent<SVGSVGElement>
+  ) => void;
+  onViewportPointerMove?: (
     x: number,
     y: number,
     event: React.PointerEvent<SVGSVGElement>
@@ -142,6 +182,30 @@ const serializeViewBox = (box: ParsedViewBox): string =>
 const viewBoxValueDiffers = (a: number, b: number, threshold: number): boolean =>
   Math.abs(roundViewBoxValue(a) - roundViewBoxValue(b)) > threshold;
 
+const toCssBlendMode = (blendMode: LayerBlendMode): React.CSSProperties["mixBlendMode"] =>
+  blendMode === "normal" ? "normal" : blendMode;
+
+const toCssFilter = (filters: ImageFilterSettings, extraBlurPx = 0): string => {
+  const blurPx = Math.max(0, filters.blurPx + extraBlurPx);
+  return [
+    `brightness(${filters.brightness})`,
+    `contrast(${filters.contrast})`,
+    `saturate(${filters.saturate})`,
+    `hue-rotate(${filters.hueRotateDeg}deg)`,
+    `blur(${blurPx}px)`,
+    `grayscale(${filters.grayscale})`,
+    `sepia(${filters.sepia})`,
+    `invert(${filters.invert})`,
+  ].join(" ");
+};
+
+const toPreserveAspectRatio = (fitMode: "cover" | "contain" | "stretch"): string => {
+  if (fitMode === "stretch") {
+    return "none";
+  }
+  return fitMode === "cover" ? "xMidYMid slice" : "xMidYMid meet";
+};
+
 // Lower fill fraction = zoomed-out framing (show a larger world area).
 const DEFAULT_MODEL_HEIGHT_FRACTION = 0.4;
 const PRIMITIVE_PADDING_PX = 76;
@@ -151,11 +215,29 @@ const OVERLAY_ANCHOR_SIZE = 44;
 const OVERLAY_ANCHOR_SCALE = 0.28;
 const ROOT_ANCHOR_RADIUS = 10;
 const SHIN_WIDTH = 12;
+const HAND_PRIMITIVE_LENGTH = 10.5;
+const HAND_PRIMITIVE_WRIST_BACK = 4.2;
+const FOOT_PRIMITIVE_LENGTH = 14.5;
+const FOOT_PRIMITIVE_HEEL_BACK = 7;
 const CAMERA_ROOT_DRIFT_RESET_THRESHOLD = 120;
 const CAMERA_VIEWBOX_EASE = 0.14;
 const CAMERA_VIEWBOX_DRIFT_EASE = 0.24;
 const CAMERA_VIEWBOX_COMMIT_EPSILON = 1e-3;
 const CAMERA_VIEWBOX_PRECISION = 4;
+const JOINT_VISUAL_INTERPOLATION_ALPHA = 0.3;
+const JOINT_VISUAL_INTERPOLATION_DRAG_ALPHA = 0.52;
+const JOINT_VISUAL_TRANSLATION_MAX_STEP = 48;
+const JOINT_VISUAL_ROTATION_MAX_STEP_DEG = 20;
+const JOINT_VISUAL_TRANSLATION_SNAP = 0.05;
+const JOINT_VISUAL_ROTATION_SNAP_DEG = 0.06;
+const POINTER_DRAG_ACTIVATION_MOUSE_PX = 0.75;
+const POINTER_DRAG_ACTIVATION_PEN_PX = 1.2;
+const POINTER_DRAG_ACTIVATION_TOUCH_PX = 6;
+const DRAG_CLICK_SUPPRESS_MS = 220;
+const ROOT_ANCHOR_HIT_RADIUS_PAD = 19;
+const JOINT_HIT_RADIUS_PAD = 8;
+const TARGET_HIT_RADIUS = 22;
+const POLE_HIT_SIZE = 32;
 const ROLE_COLORS = {
   anchor: "#dc2626",
   parent: "#7c3aed",
@@ -167,20 +249,110 @@ const EXTREMITY_JOINT_SET = new Set<JointId>([
   ...Array.from(HAND_JOINT_SET),
   ...Array.from(FOOT_JOINT_SET),
 ]);
-const PRIMITIVE_ACTIVATION_PARENT_BY_CHILD: Partial<Record<JointId, JointId>> = {
-  l_hand: "l_elbow",
-  r_hand: "r_elbow",
-  l_foot: "l_knee",
-  r_foot: "r_knee",
-};
 const getPrimitiveActivationJointId = (childId: JointId, parentId: JointId): JointId =>
-  PRIMITIVE_ACTIVATION_PARENT_BY_CHILD[childId] ?? parentId;
+  ACTIVATION_PARENT_BY_CHILD[childId] ?? parentId;
+const getPointerDragActivationPx = (pointerType: string | undefined): number => {
+  if (pointerType === "touch") {
+    return POINTER_DRAG_ACTIVATION_TOUCH_PX;
+  }
+  if (pointerType === "pen") {
+    return POINTER_DRAG_ACTIVATION_PEN_PX;
+  }
+  return POINTER_DRAG_ACTIVATION_MOUSE_PX;
+};
 
 type ViewportDragState =
   | { kind: "joint"; pointerId: number; jointId: JointId }
   | { kind: "target"; pointerId: number; jointId: JointId }
   | { kind: "pole"; pointerId: number; jointId: JointId }
   | { kind: "overlay-anchor"; pointerId: number; overlayId: string; anchor: "parent" | "child" };
+
+type JointBlendResult = {
+  joints: Record<JointId, JointState>;
+  settled: boolean;
+};
+
+const cloneJointStateMap = (joints: Record<JointId, JointState>): Record<JointId, JointState> => {
+  const next = {} as Record<JointId, JointState>;
+  for (const jointId of JOINT_IDS) {
+    const joint = joints[jointId];
+    next[jointId] = {
+      ...joint,
+      localTranslation: { ...joint.localTranslation },
+    };
+  }
+  return next;
+};
+
+const shortestRotationDelta = (fromDeg: number, toDeg: number): number => {
+  const normalized = normalizeAngleDeg(toDeg - fromDeg);
+  return normalized > 180 ? normalized - 360 : normalized;
+};
+
+const blendJointStateMap = (
+  current: Record<JointId, JointState>,
+  target: Record<JointId, JointState>,
+  alpha: number,
+  maxTranslationStep: number,
+  maxRotationStepDeg: number
+): JointBlendResult => {
+  const eased = Math.max(0, Math.min(1, alpha));
+  const next = {} as Record<JointId, JointState>;
+  let settled = true;
+  let changed = false;
+
+  for (const jointId of JOINT_IDS) {
+    const fromJoint = current[jointId];
+    const toJoint = target[jointId];
+
+    const fromRotation = fromJoint.localRotationDegRaw;
+    const rotationDelta = shortestRotationDelta(fromRotation, toJoint.localRotationDegRaw);
+    const rotationSettled = Math.abs(rotationDelta) <= JOINT_VISUAL_ROTATION_SNAP_DEG;
+    const rotationStep = rotationSettled
+      ? rotationDelta
+      : Math.max(-maxRotationStepDeg, Math.min(maxRotationStepDeg, rotationDelta * eased));
+    const nextRotation = normalizeAngleDeg(fromRotation + rotationStep);
+
+    const dx = toJoint.localTranslation.x - fromJoint.localTranslation.x;
+    const dy = toJoint.localTranslation.y - fromJoint.localTranslation.y;
+    const distance = Math.hypot(dx, dy);
+    const translationSettled = distance <= JOINT_VISUAL_TRANSLATION_SNAP;
+    const translationStep = translationSettled
+      ? distance
+      : Math.min(distance, Math.max(0.8, Math.min(maxTranslationStep, distance * eased)));
+    const translationT = distance > 1e-9 ? translationStep / distance : 1;
+    const nextTranslation = {
+      x: fromJoint.localTranslation.x + dx * translationT,
+      y: fromJoint.localTranslation.y + dy * translationT,
+    };
+
+    const nextJoint: JointState = {
+      ...fromJoint,
+      parentId: toJoint.parentId,
+      length: toJoint.length,
+      localRotationDegRaw: rotationSettled ? normalizeAngleDeg(toJoint.localRotationDegRaw) : nextRotation,
+      localTranslation: translationSettled
+        ? { ...toJoint.localTranslation }
+        : nextTranslation,
+    };
+    next[jointId] = nextJoint;
+    if (
+      Math.abs(nextJoint.localRotationDegRaw - fromJoint.localRotationDegRaw) > 1e-6 ||
+      Math.abs(nextJoint.localTranslation.x - fromJoint.localTranslation.x) > 1e-6 ||
+      Math.abs(nextJoint.localTranslation.y - fromJoint.localTranslation.y) > 1e-6
+    ) {
+      changed = true;
+    }
+    if (!rotationSettled || !translationSettled) {
+      settled = false;
+    }
+  }
+
+  return {
+    joints: changed ? next : current,
+    settled,
+  };
+};
 
 const getPrimitiveStrokeWidth = (childId: JointId): number => {
   if (childId === "torso") {
@@ -228,7 +400,12 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   height = "100%",
   className,
   primitiveTurnoverEnabled = false,
+  sceneLayers,
+  renderIntent = "interactive",
+  exportLayerMode = "composite",
+  canvasBackground = "#ffffff",
   displayTransform,
+  limbStacking = "left_over_right",
   rootAnchorUseGroundX = true,
   rootAnchorUseGroundY = true,
   cameraZoomPreset = "medium",
@@ -242,6 +419,10 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   jointVisibilityMap,
   skeletonVisibilityMap,
   overlayInteractionEnabled = true,
+  manakinMode = false,
+  parallaxLayersEnabled = false,
+  rotationPreview = null,
+  targetDisplayPositions,
   onJointPointerDown,
   onJointClick,
   onTargetPointerDown,
@@ -249,6 +430,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   onJointDrag,
   onTargetDrag,
   onPoleTargetDrag,
+  onViewportPointerMove,
   onDragEnd,
   onPinchZoom,
   onOverlayAnchorDragMove,
@@ -260,19 +442,108 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   const [cameraLockedViewBox, setCameraLockedViewBox] = useState<string | null>(null);
   const [dragState, setDragState] = useState<ViewportDragState | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 1, height: 1 });
+  const [hoveredTargetJointId, setHoveredTargetJointId] = useState<JointId | null>(null);
   const [ghostNowMs, setGhostNowMs] = useState(() => Date.now());
   const [ghostFrames, setGhostFrames] = useState<Array<{ t: number; positions: Record<JointId, Vec2> }>>([]);
+  const [visualJoints, setVisualJoints] = useState<Record<JointId, JointState>>(() =>
+    cloneJointStateMap(state.joints)
+  );
+  const visualJointsRef = useRef<Record<JointId, JointState>>(cloneJointStateMap(state.joints));
   const ghostFramesRef = useRef<Array<{ t: number; positions: Record<JointId, Vec2> }>>([]);
   const touchPointsRef = useRef<Map<number, Vec2>>(new Map());
   const pinchDistanceRef = useRef<number | null>(null);
-  const showIkTargets = state.mode === "IK";
-  const showMotionTrails = !cleanFkMode;
-  const showBalanceOverlay = !cleanFkMode;
+  const dragMotionRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    pointerType: string;
+    moved: boolean;
+  } | null>(null);
+  const suppressClickUntilRef = useRef<number>(0);
+  const exportIntent = renderIntent === "export";
+  const activeSceneLayers = sceneLayers ?? state.sceneLayers;
+  const includeBackgroundLayer =
+    exportLayerMode === "composite" || exportLayerMode === "background";
+  const includeForegroundLayer =
+    exportLayerMode === "composite" || exportLayerMode === "foreground";
+  const includeSkeletonLayer =
+    exportLayerMode === "composite" || exportLayerMode === "skeleton";
+  const includeJointLayer =
+    exportLayerMode === "composite" || exportLayerMode === "joints";
+  const includeMaskLayer =
+    exportLayerMode === "composite" || exportLayerMode === "masks";
+  const skeletonLayerVisible = skeletonVisible && (!exportIntent || includeSkeletonLayer);
+  const jointsLayerVisible = jointsVisible && (!exportIntent || includeJointLayer);
+  const masksLayerVisible = masksVisible && (!exportIntent || includeMaskLayer);
+  const showIkTargets = !exportIntent && state.mode === "IK";
+  const ghostPreviewActive =
+    Boolean(dragState) || Boolean(rotationPreview && rotationPreview.points.length > 1);
+  const showMotionTrails =
+    !exportIntent && (!cleanFkMode || ghostPreviewActive || ghostFrames.length > 0);
+  const showBalanceOverlay = !exportIntent && !cleanFkMode;
+  const showHelpers = !exportIntent;
+
+  useEffect(() => {
+    visualJointsRef.current = visualJoints;
+  }, [visualJoints]);
+
+  useEffect(() => {
+    const target = cloneJointStateMap(state.joints);
+    if (exportIntent) {
+      visualJointsRef.current = target;
+      setVisualJoints(target);
+      return;
+    }
+
+    let rafId: number | null = null;
+    let cancelled = false;
+
+    const step = () => {
+      if (cancelled) {
+        return;
+      }
+      const isInteracting = Boolean(dragState);
+      const alpha = isInteracting ? JOINT_VISUAL_INTERPOLATION_DRAG_ALPHA : JOINT_VISUAL_INTERPOLATION_ALPHA;
+      const translationStep = isInteracting
+        ? JOINT_VISUAL_TRANSLATION_MAX_STEP * 1.35
+        : JOINT_VISUAL_TRANSLATION_MAX_STEP;
+      const rotationStep = isInteracting
+        ? JOINT_VISUAL_ROTATION_MAX_STEP_DEG * 1.35
+        : JOINT_VISUAL_ROTATION_MAX_STEP_DEG;
+      const blended = blendJointStateMap(
+        visualJointsRef.current,
+        target,
+        alpha,
+        translationStep,
+        rotationStep
+      );
+      visualJointsRef.current = blended.joints;
+      setVisualJoints(blended.joints);
+
+      if (!blended.settled) {
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          rafId = window.requestAnimationFrame(step);
+        }
+      }
+    };
+
+    step();
+    return () => {
+      cancelled = true;
+      if (
+        rafId !== null &&
+        typeof window !== "undefined" &&
+        typeof window.cancelAnimationFrame === "function"
+      ) {
+        window.cancelAnimationFrame(rafId);
+      }
+    };
+  }, [dragState, exportIntent, state.joints]);
 
   const world = useMemo(() => {
-    const computed = computeWorldTransforms(state.joints);
+    const computed = computeWorldTransforms(exportIntent ? state.joints : visualJoints);
     return applyPinsToWorldTransforms(computed, state.pins).world;
-  }, [state.joints, state.pins]);
+  }, [exportIntent, state.joints, state.pins, visualJoints]);
 
   const parentJointSet = useMemo(() => {
     const set = new Set<JointId>();
@@ -304,6 +575,39 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     }),
     [safeOffsetX, safeOffsetY, safeScale]
   );
+
+  const collarDisplay = world.collar ? toDisplay(world.collar.worldPosition) : null;
+  const torsoDisplay = world.torso ? toDisplay(world.torso.worldPosition) : null;
+  const waistDisplay = world.waist ? toDisplay(world.waist.worldPosition) : null;
+  const torsoRibbonSpread =
+    collarDisplay && waistDisplay
+      ? Math.max(10, Math.abs(collarDisplay.x - waistDisplay.x) * 0.35)
+      : 0;
+  const torsoAccentSpread = Math.max(6, torsoRibbonSpread * 0.6);
+  const torsoRibbonPath =
+    collarDisplay && torsoDisplay && waistDisplay
+      ? [
+          `M ${collarDisplay.x - torsoRibbonSpread} ${collarDisplay.y + 4}`,
+          `C ${collarDisplay.x - torsoRibbonSpread} ${torsoDisplay.y - 8}, ${waistDisplay.x - torsoRibbonSpread} ${torsoDisplay.y - 6}, ${waistDisplay.x - torsoRibbonSpread} ${waistDisplay.y}`,
+          `L ${waistDisplay.x + torsoRibbonSpread} ${waistDisplay.y}`,
+          `C ${waistDisplay.x + torsoRibbonSpread} ${torsoDisplay.y - 6}, ${collarDisplay.x + torsoRibbonSpread} ${torsoDisplay.y - 8}, ${collarDisplay.x + torsoRibbonSpread} ${collarDisplay.y + 4}`,
+          "Z",
+        ].join(" ")
+      : "";
+  const torsoAccentPath =
+    collarDisplay && torsoDisplay && waistDisplay
+      ? [
+          `M ${collarDisplay.x - torsoAccentSpread} ${collarDisplay.y + 8}`,
+          `C ${collarDisplay.x - torsoAccentSpread} ${torsoDisplay.y - 4}, ${waistDisplay.x - torsoAccentSpread} ${torsoDisplay.y - 2}, ${waistDisplay.x - torsoAccentSpread} ${waistDisplay.y}`,
+          `L ${waistDisplay.x + torsoAccentSpread} ${waistDisplay.y}`,
+          `C ${waistDisplay.x + torsoAccentSpread} ${torsoDisplay.y - 2}, ${collarDisplay.x + torsoAccentSpread} ${torsoDisplay.y - 4}, ${collarDisplay.x + torsoAccentSpread} ${collarDisplay.y + 8}`,
+          "Z",
+        ].join(" ")
+      : "";
+  const waistEllipseRx =
+    waistDisplay && torsoDisplay ? 26 + Math.abs(waistDisplay.x - torsoDisplay.x) * 0.25 : 26;
+  const waistEllipseRy =
+    waistDisplay && torsoDisplay ? 12 + Math.abs(waistDisplay.y - torsoDisplay.y) * 0.18 : 12;
 
   const isJointEnabled = useCallback(
     (jointId: JointId): boolean => jointEnabledMap?.[jointId] !== false,
@@ -345,6 +649,10 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
   }, []);
 
   const clearDrag = useCallback(() => {
+    const dragMotion = dragMotionRef.current;
+    if (dragMotion?.moved) {
+      suppressClickUntilRef.current = Date.now() + DRAG_CLICK_SUPPRESS_MS;
+    }
     if (dragState) {
       const svg = svgRef.current;
       if (svg?.hasPointerCapture(dragState.pointerId)) {
@@ -355,10 +663,14 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       }
     }
     setDragState(null);
+    setHoveredTargetJointId(null);
+    dragMotionRef.current = null;
     onDragEnd?.();
     touchPointsRef.current.clear();
     pinchDistanceRef.current = null;
   }, [dragState, onDragEnd, onOverlayAnchorDragEnd]);
+
+  const shouldSuppressClick = useCallback((): boolean => Date.now() < suppressClickUntilRef.current, []);
 
   const handleSvgPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
@@ -413,6 +725,13 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       event.preventDefault();
       const captureTarget = svgRef.current ?? event.currentTarget;
       captureTarget.setPointerCapture(event.pointerId);
+      dragMotionRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        pointerType: event.pointerType,
+        moved: false,
+      };
       setDragState({
         kind: "joint",
         pointerId: event.pointerId,
@@ -433,6 +752,13 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       event.preventDefault();
       const captureTarget = svgRef.current ?? event.currentTarget;
       captureTarget.setPointerCapture(event.pointerId);
+      dragMotionRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        pointerType: event.pointerType,
+        moved: false,
+      };
       setDragState({
         kind: "target",
         pointerId: event.pointerId,
@@ -453,6 +779,13 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       event.preventDefault();
       const captureTarget = svgRef.current ?? event.currentTarget;
       captureTarget.setPointerCapture(event.pointerId);
+      dragMotionRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        pointerType: event.pointerType,
+        moved: false,
+      };
       setDragState({
         kind: "pole",
         pointerId: event.pointerId,
@@ -475,6 +808,13 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       if (svg) {
         svg.setPointerCapture(event.pointerId);
       }
+      dragMotionRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        pointerType: event.pointerType,
+        moved: false,
+      };
       setDragState({
         kind: "overlay-anchor",
         pointerId: event.pointerId,
@@ -509,15 +849,15 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       };
       const coalesced =
         typeof nativeEvent.getCoalescedEvents === "function" ? nativeEvent.getCoalescedEvents() : [];
-      const sample = coalesced.length ? coalesced[coalesced.length - 1] : nativeEvent;
-      const clientX = Number.isFinite(sample.clientX) ? sample.clientX : event.clientX;
-      const clientY = Number.isFinite(sample.clientY) ? sample.clientY : event.clientY;
+      const finalSample = coalesced.length ? coalesced[coalesced.length - 1] : nativeEvent;
+      const finalClientX = Number.isFinite(finalSample.clientX) ? finalSample.clientX : event.clientX;
+      const finalClientY = Number.isFinite(finalSample.clientY) ? finalSample.clientY : event.clientY;
 
       if (event.pointerType === "touch") {
         const tracked = touchPointsRef.current.get(event.pointerId);
         if (tracked) {
           event.preventDefault();
-          touchPointsRef.current.set(event.pointerId, { x: clientX, y: clientY });
+          touchPointsRef.current.set(event.pointerId, { x: finalClientX, y: finalClientY });
           if (touchPointsRef.current.size === 2 && onPinchZoom) {
             const points = Array.from(touchPointsRef.current.values());
             const nextDistance = Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
@@ -532,30 +872,39 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           }
         }
       }
-      if (!dragState || event.pointerId !== dragState.pointerId) {
-        return;
-      }
-      const svgPoint = clientToSvgPoint(clientX, clientY);
+      const svgPoint = clientToSvgPoint(finalClientX, finalClientY);
       if (!svgPoint) {
         return;
       }
+      const worldPoint = fromDisplay(svgPoint);
+      onViewportPointerMove?.(worldPoint.x, worldPoint.y, event);
+      if (!dragState || event.pointerId !== dragState.pointerId) {
+        return;
+      }
+
+      const dragMotion = dragMotionRef.current;
+      if (dragMotion && dragMotion.pointerId === event.pointerId && !dragMotion.moved) {
+        const distanceFromStart = Math.hypot(finalClientX - dragMotion.startX, finalClientY - dragMotion.startY);
+        const activationDistance = getPointerDragActivationPx(dragMotion.pointerType);
+        if (distanceFromStart < activationDistance) {
+          return;
+        }
+        dragMotion.moved = true;
+        suppressClickUntilRef.current = Date.now() + DRAG_CLICK_SUPPRESS_MS;
+      }
       if (dragState.kind === "joint") {
-        const worldPoint = fromDisplay(svgPoint);
         onJointDrag?.(dragState.jointId, worldPoint.x, worldPoint.y, event);
         return;
       }
       if (dragState.kind === "target") {
-        const worldPoint = fromDisplay(svgPoint);
         onTargetDrag?.(dragState.jointId, worldPoint.x, worldPoint.y, event);
         return;
       }
       if (dragState.kind === "pole") {
-        const worldPoint = fromDisplay(svgPoint);
         onPoleTargetDrag?.(dragState.jointId, worldPoint.x, worldPoint.y, event);
         return;
       }
       if (dragState.kind === "overlay-anchor") {
-        const worldPoint = fromDisplay(svgPoint);
         onOverlayAnchorDragMove?.(
           dragState.overlayId,
           dragState.anchor,
@@ -563,7 +912,6 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           worldPoint.y,
           event
         );
-        return;
       }
     },
     [
@@ -574,6 +922,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       onPinchZoom,
       onPoleTargetDrag,
       onTargetDrag,
+      onViewportPointerMove,
       onOverlayAnchorDragMove,
     ]
   );
@@ -877,8 +1226,17 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     ];
   }, [toDisplay, world]);
   const extremitySegments = useMemo(
-    () => primitiveSegments.filter((segment) => EXTREMITY_JOINT_SET.has(segment.childId)),
-    [primitiveSegments]
+    () => {
+      const sorted = [...primitiveSegments.filter((segment) => EXTREMITY_JOINT_SET.has(segment.childId))];
+      sorted.sort((a, b) => {
+        const aIsLeft = a.childId.startsWith("l_");
+        const bIsLeft = b.childId.startsWith("l_");
+        if (aIsLeft === bIsLeft) return 0;
+        return limbStacking === "left_over_right" ? (aIsLeft ? 1 : -1) : (aIsLeft ? -1 : 1);
+      });
+      return sorted;
+    },
+    [primitiveSegments, limbStacking]
   );
 
   const groundPins = state.pins.filter((pin) => pin.kind === "ground");
@@ -961,8 +1319,22 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     () => toDisplay({ x: centerOfMass.x, y: floorGuideY }),
     [centerOfMass.x, floorGuideY, toDisplay]
   );
+  const GHOST_SAMPLE_EPSILON_PX = 0.3;
   const GHOST_LIFETIME_MS = 420;
   const GHOST_MAX_FRAMES = 10;
+  const pruneGhostFrames = useCallback(
+    (frames: Array<{ t: number; positions: Record<JointId, Vec2> }>, now: number) => {
+      const firstVisibleIndex = frames.findIndex((frame) => now - frame.t <= GHOST_LIFETIME_MS);
+      if (firstVisibleIndex === -1) {
+        return frames.length ? [] : frames;
+      }
+      if (firstVisibleIndex === 0) {
+        return frames;
+      }
+      return frames.slice(firstVisibleIndex);
+    },
+    []
+  );
 
   useLayoutEffect(() => {
     if (!showMotionTrails) {
@@ -975,24 +1347,27 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
 
     setGhostFrames((prev) => {
       const now = Date.now();
-      const pruned = prev.filter((frame) => now - frame.t <= GHOST_LIFETIME_MS);
+      const pruned = pruneGhostFrames(prev, now);
       const last = pruned[pruned.length - 1];
       if (last) {
-        const probeJoint = state.selectedJointId ?? "waist";
-        const prevPos = last.positions[probeJoint];
-        const nextPos = positions[probeJoint];
-        if (prevPos && nextPos) {
+        const maxDelta = JOINT_IDS.reduce((maxDistance, jointId) => {
+          const prevPos = last.positions[jointId];
+          const nextPos = positions[jointId];
+          if (!prevPos || !nextPos) {
+            return maxDistance;
+          }
           const dx = nextPos.x - prevPos.x;
           const dy = nextPos.y - prevPos.y;
-          if (Math.hypot(dx, dy) < 0.35) {
-            return pruned;
-          }
+          return Math.max(maxDistance, Math.hypot(dx, dy));
+        }, 0);
+        if (maxDelta < GHOST_SAMPLE_EPSILON_PX) {
+          return pruned;
         }
       }
       const next = [...pruned, { t: now, positions }];
       return next.slice(-GHOST_MAX_FRAMES);
     });
-  }, [showMotionTrails, toDisplay, world, state.selectedJointId]);
+  }, [pruneGhostFrames, showMotionTrails, toDisplay, world]);
 
   useEffect(() => {
     if (showMotionTrails) {
@@ -1016,7 +1391,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     const tick = () => {
       const now = Date.now();
       setGhostNowMs(now);
-      setGhostFrames((prev) => prev.filter((frame) => now - frame.t <= GHOST_LIFETIME_MS));
+      setGhostFrames((prev) => pruneGhostFrames(prev, now));
       const hasVisibleFrame = ghostFramesRef.current.some((frame) => now - frame.t <= GHOST_LIFETIME_MS);
       if (hasVisibleFrame) {
         rafId = requestAnimationFrame(tick);
@@ -1024,7 +1399,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [ghostFrames.length, showMotionTrails]);
+  }, [ghostFrames.length, pruneGhostFrames, showMotionTrails]);
 
   const visibleGhostFrames = useMemo(
     () => ghostFrames.filter((frame) => ghostNowMs - frame.t <= GHOST_LIFETIME_MS),
@@ -1039,6 +1414,27 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
     [toDisplay, world]
   );
   const primitiveSurfaceFilter = primitiveTurnoverEnabled ? "url(#primitive-feather)" : undefined;
+  const activeViewBoxValue = cameraLockedViewBox ?? stableViewBoxRef.current;
+  const activeViewBox = parseViewBox(activeViewBoxValue) ?? {
+    x: -200,
+    y: -200,
+    width: 400,
+    height: 400,
+  };
+  const sceneLayerCenter = {
+    x: activeViewBox.x + activeViewBox.width * 0.5,
+    y: activeViewBox.y + activeViewBox.height * 0.5,
+  };
+  const buildSceneLayerTransform = (layer: RigSceneLayers["background"]): string =>
+    `translate(${layer.transform.x} ${layer.transform.y}) ` +
+    `rotate(${layer.transform.rotation} ${sceneLayerCenter.x} ${sceneLayerCenter.y}) ` +
+    `translate(${sceneLayerCenter.x} ${sceneLayerCenter.y}) ` +
+    `scale(${layer.transform.scaleX} ${layer.transform.scaleY}) ` +
+    `translate(${-sceneLayerCenter.x} ${-sceneLayerCenter.y})`;
+  const backgroundShadowFilter =
+    activeSceneLayers.backgroundShadow.enabled && activeSceneLayers.background.dataUrl
+      ? `drop-shadow(${activeSceneLayers.backgroundShadow.offsetX}px ${activeSceneLayers.backgroundShadow.offsetY}px ${activeSceneLayers.backgroundShadow.blurPx}px rgba(15, 23, 42, ${activeSceneLayers.backgroundShadow.alpha}))`
+      : undefined;
 
   return (
     <svg
@@ -1047,6 +1443,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       width={width}
       height={height}
       viewBox={cameraLockedViewBox ?? stableViewBoxRef.current}
+      data-parallax-enabled={parallaxLayersEnabled ? "true" : "false"}
       role="img"
       aria-label="Skeleton viewport"
       onPointerMove={handleSvgPointerMove}
@@ -1054,7 +1451,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
       onPointerUp={clearDrag}
       onPointerCancel={clearDrag}
       style={{
-        background: "#ffffff",
+        background: canvasBackground,
         touchAction: "none",
         userSelect: "none",
         WebkitUserSelect: "none",
@@ -1086,8 +1483,41 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         </radialGradient>
       </defs>
 
-      <rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#rig-grid)" />
-      {skeletonVisible && world.waist && (
+      <rect
+        x={activeViewBox.x}
+        y={activeViewBox.y}
+        width={activeViewBox.width}
+        height={activeViewBox.height}
+        fill={canvasBackground}
+      />
+      {showHelpers && (
+        <rect x="-5000" y="-5000" width="10000" height="10000" fill="url(#rig-grid)" />
+      )}
+      {includeBackgroundLayer && activeSceneLayers.background.visible && activeSceneLayers.background.dataUrl && (
+        <g
+          data-export-layer="background"
+          transform={buildSceneLayerTransform(activeSceneLayers.background)}
+          opacity={activeSceneLayers.background.alpha}
+          style={{
+            mixBlendMode: toCssBlendMode(activeSceneLayers.background.blendMode),
+          }}
+        >
+          <image
+            href={activeSceneLayers.background.dataUrl}
+            x={activeViewBox.x}
+            y={activeViewBox.y}
+            width={activeViewBox.width}
+            height={activeViewBox.height}
+            preserveAspectRatio={toPreserveAspectRatio(activeSceneLayers.background.fitMode)}
+            style={{ filter: toCssFilter(activeSceneLayers.background.filters) }}
+          />
+        </g>
+      )}
+      <g
+        data-export-layer="character"
+        style={backgroundShadowFilter ? { filter: backgroundShadowFilter } : undefined}
+      >
+      {skeletonLayerVisible && showHelpers && world.waist && (
         <g pointerEvents="none">
           <circle
             cx={toDisplay(world.waist.worldPosition).x}
@@ -1115,7 +1545,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           />
         </g>
       )}
-      {jointsVisible && (() => {
+      {jointsLayerVisible && showHelpers && (() => {
         const waist = world.waist?.worldPosition ?? { x: 0, y: 0 };
         const leftFoot = world.l_foot?.worldPosition;
         const rightFoot = world.r_foot?.worldPosition;
@@ -1163,7 +1593,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
             <circle
               cx={rootPoint.x}
               cy={rootPoint.y}
-              r={ROOT_ANCHOR_RADIUS + 13}
+              r={ROOT_ANCHOR_RADIUS + ROOT_ANCHOR_HIT_RADIUS_PAD}
               fill="rgba(0,0,0,0.001)"
               stroke="none"
               vectorEffect="non-scaling-stroke"
@@ -1201,16 +1631,35 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
               vectorEffect="non-scaling-stroke"
               filter="url(#skeleton-feather)"
             />
-            {!cleanFkMode && world.torso && (
-              <circle
-                cx={toDisplay(world.torso.worldPosition).x}
-                cy={toDisplay(world.torso.worldPosition).y}
-                r={ROOT_ANCHOR_RADIUS * 0.6}
-                fill="rgba(244, 114, 182, 0.35)"
-                stroke="#c026d3"
-                strokeWidth={1}
-                vectorEffect="non-scaling-stroke"
-              />
+            {!cleanFkMode && torsoRibbonPath && (
+              <g pointerEvents="none">
+                <path
+                  d={torsoRibbonPath}
+                  fill="rgba(248, 113, 113, 0.25)"
+                  stroke="rgba(248, 113, 113, 0.6)"
+                  strokeWidth={1.4}
+                  vectorEffect="non-scaling-stroke"
+                />
+                <path
+                  d={torsoAccentPath}
+                  fill="rgba(59, 130, 246, 0.3)"
+                  stroke="rgba(59, 130, 246, 0.6)"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+                {waistDisplay && (
+                  <ellipse
+                    cx={waistDisplay.x}
+                    cy={waistDisplay.y}
+                    rx={waistEllipseRx}
+                    ry={waistEllipseRy}
+                    fill="rgba(15, 118, 110, 0.3)"
+                    stroke="rgba(15, 118, 110, 0.9)"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                )}
+              </g>
             )}
           </g>
         );
@@ -1239,24 +1688,6 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
                 strokeWidth={2.5}
                 strokeLinecap="round"
                 strokeDasharray="5 4"
-                vectorEffect="non-scaling-stroke"
-              />
-            );
-          })}
-          {JOINT_IDS.map((jointId) => {
-            if (jointId === "root") {
-              return null;
-            }
-            const p = liveGhostPositions[jointId];
-            return (
-              <circle
-                key={`live-ghost-joint-${jointId}`}
-                cx={p.x}
-                cy={p.y}
-                r={4.5}
-                fill="#ddd6fe"
-                stroke="#8b5cf6"
-                strokeWidth={1.2}
                 vectorEffect="non-scaling-stroke"
               />
             );
@@ -1297,29 +1728,49 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
                 />
               );
             })}
-            {JOINT_IDS.map((jointId) => {
-              if (jointId === "root") {
-                return null;
-              }
-              const p = frame.positions[jointId];
-              return (
-                <circle
-                  key={`ghost-joint-${frame.t}-${jointId}`}
-                  cx={p.x}
-                  cy={p.y}
-                  r={4}
-                  fill="#c4b5fd"
-                  stroke="#7c3aed"
-                  strokeWidth={1}
-                  vectorEffect="non-scaling-stroke"
-                />
-              );
-            })}
           </g>
         );
       })}
 
-      {skeletonVisible && primitiveSegments.map((segment) => {
+      {rotationPreview && rotationPreview.points.length > 1 && (
+        <g pointerEvents="none">
+          <polyline
+            points={rotationPreview.points.map((pt) => `${pt.x},${pt.y}`).join(" ")}
+            stroke="#a855f7"
+            strokeWidth={1.5}
+            fill="none"
+            strokeDasharray="6 4"
+            opacity={0.8}
+            vectorEffect="non-scaling-stroke"
+          />
+          {rotationPreview.points.map((point, index) => {
+            const alpha = 0.85 - (index / Math.max(1, rotationPreview.points.length)) * 0.6;
+            return (
+              <circle
+                key={`rotation-preview-point-${index}`}
+                cx={point.x}
+                cy={point.y}
+                r={2.2}
+                fill="rgba(244, 114, 182, 0.8)"
+                opacity={Math.max(0.2, alpha)}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+          <line
+            x1={rotationPreview.pivot.x}
+            y1={rotationPreview.pivot.y}
+            x2={rotationPreview.points[rotationPreview.points.length - 1].x}
+            y2={rotationPreview.points[rotationPreview.points.length - 1].y}
+            stroke="rgba(129, 140, 248, 0.9)"
+            strokeWidth={1.2}
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        </g>
+      )}
+
+      {skeletonLayerVisible && primitiveSegments.map((segment) => {
         const activationJointId = getPrimitiveActivationJointId(segment.childId, segment.parentId);
         const activationJoint = world[activationJointId];
         const enabled =
@@ -1342,7 +1793,12 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
             vectorEffect="non-scaling-stroke"
             filter={primitiveSurfaceFilter}
             style={{ cursor: enabled ? "grab" : "not-allowed", opacity: enabled ? 1 : 0.55 }}
-            onClick={() => {
+            onClick={(event) => {
+              if (shouldSuppressClick()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
               if (!enabled) {
                 return;
               }
@@ -1364,17 +1820,110 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           />
         );
       })}
-      {skeletonVisible && extremitySegments.map((segment) => {
+      {manakinMode && skeletonLayerVisible && (() => {
+        const waist = world.waist?.worldPosition;
+        const leftHip = world.l_hip?.worldPosition;
+        const rightHip = world.r_hip?.worldPosition;
+        if (!waist || !leftHip || !rightHip) {
+          return null;
+        }
+        const hipMid = { x: (leftHip.x + rightHip.x) * 0.5, y: (leftHip.y + rightHip.y) * 0.5 };
+        const base = { x: hipMid.x, y: Math.max(leftHip.y, rightHip.y) + 6 };
+        const pointsAttr = [leftHip, rightHip, base, waist]
+          .map((pt) => toDisplay(pt))
+          .map((pt) => `${pt.x},${pt.y}`)
+          .join(" ");
+        return (
+          <polygon
+            key="pelvis-ribbon"
+            points={pointsAttr}
+            fill="rgba(16, 185, 129, 0.16)"
+            stroke="rgba(16, 185, 129, 0.55)"
+            strokeWidth={2}
+            vectorEffect="non-scaling-stroke"
+            filter={primitiveSurfaceFilter}
+            style={{ pointerEvents: "none" }}
+          />
+        );
+      })()}
+      {manakinMode && skeletonLayerVisible && (() => {
+        const waist = world.waist?.worldPosition;
+        const xiphoid = world.xiphoid?.worldPosition;
+        const collar = world.collar?.worldPosition;
+        const neck = world.neck?.worldPosition;
+        if (!waist || !xiphoid || !collar || !neck) {
+          return null;
+        }
+        const pts = [waist, xiphoid, collar, neck].map((pt) => toDisplay(pt));
+        const pathD = `M ${pts[0].x} ${pts[0].y} L ${pts[1].x} ${pts[1].y} L ${pts[2].x} ${pts[2].y} L ${pts[3].x} ${pts[3].y}`;
+        return (
+          <path
+            key="spine-ribbon"
+            d={pathD}
+            fill="none"
+            stroke="rgba(59, 130, 246, 0.7)"
+            strokeWidth={10}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            filter={primitiveSurfaceFilter}
+            style={{ pointerEvents: "none" }}
+          />
+        );
+      })()}
+      {skeletonLayerVisible && extremitySegments.map((segment) => {
         const enabled =
           isSkeletonJointVisible(segment.childId) &&
           isSkeletonJointVisible(segment.parentId) &&
           isJointEnabled(segment.childId) &&
           isJointEnabled(segment.parentId);
-        const direction = subVec2(segment.end, segment.start);
-        const angleDeg = (Math.atan2(direction.y, direction.x) * 180) / Math.PI;
+        const direction = normalizeVec2(subVec2(segment.end, segment.start));
+        if (lengthVec2(direction) <= 1e-5) {
+          return null;
+        }
+        const normal = { x: -direction.y, y: direction.x };
         const isFoot = FOOT_JOINT_SET.has(segment.childId);
-        const radiusX = isFoot ? 11 : 7.5;
-        const radiusY = isFoot ? 5.5 : 6.5;
+        const angleDeg = (Math.atan2(direction.y, direction.x) * 180) / Math.PI;
+        const makePoint = (along: number, across: number): Vec2 =>
+          addVec2(segment.end, addVec2(scaleVec2(direction, along), scaleVec2(normal, across)));
+        const silhouettePoints = isFoot
+          ? [
+              makePoint(-FOOT_PRIMITIVE_HEEL_BACK, 4.3),
+              makePoint(1.4, 6.8),
+              makePoint(FOOT_PRIMITIVE_LENGTH, 5.8),
+              makePoint(FOOT_PRIMITIVE_LENGTH, -5.8),
+              makePoint(1.8, -4.8),
+              makePoint(-FOOT_PRIMITIVE_HEEL_BACK, -3.6),
+            ]
+          : [
+              makePoint(-HAND_PRIMITIVE_WRIST_BACK, 5.3),
+              makePoint(1.8, 6.4),
+              makePoint(HAND_PRIMITIVE_LENGTH, 4.4),
+              makePoint(HAND_PRIMITIVE_LENGTH, -4.4),
+              makePoint(1.8, -6.4),
+              makePoint(-HAND_PRIMITIVE_WRIST_BACK, -5.3),
+            ];
+        const silhouettePointsAttr = silhouettePoints.map((point) => `${point.x},${point.y}`).join(" ");
+        const accentStart = isFoot ? makePoint(-4.4, 0.35) : makePoint(-2.4, 0);
+        const accentEnd = isFoot ? makePoint(11.2, 0.7) : makePoint(7.8, 0);
+        const toePoint = isFoot ? makePoint(FOOT_PRIMITIVE_LENGTH, 0) : null;
+        const hitRadiusX = isFoot ? 23 : 19;
+        const hitRadiusY = isFoot ? 14 : 12;
+        const fillColor = enabled
+          ? isFoot
+            ? "rgba(17, 24, 39, 0.24)"
+            : "rgba(30, 64, 175, 0.24)"
+          : "rgba(107, 114, 128, 0.2)";
+        const strokeColor = enabled
+          ? isFoot
+            ? "rgba(17, 24, 39, 0.46)"
+            : "rgba(30, 64, 175, 0.42)"
+          : "rgba(107, 114, 128, 0.35)";
+        const accentColor = enabled
+          ? isFoot
+            ? "rgba(255, 255, 255, 0.5)"
+            : "rgba(255, 255, 255, 0.58)"
+          : "rgba(255, 255, 255, 0.35)";
         return (
           <g
             key={`extremity-${segment.childId}`}
@@ -1386,7 +1935,12 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
                 : "not-allowed",
               opacity: enabled ? 1 : 0.55,
             }}
-            onClick={() => {
+            onClick={(event) => {
+              if (shouldSuppressClick()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
               if (!enabled) {
                 return;
               }
@@ -1410,23 +1964,51 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
               handleJointDragStart(segment.parentId, event);
             }}
           >
-            <ellipse
-              cx={segment.end.x}
-              cy={segment.end.y}
-              rx={radiusX}
-              ry={radiusY}
-              fill={enabled ? "rgba(17, 24, 39, 0.24)" : "rgba(107, 114, 128, 0.2)"}
-              stroke={enabled ? "rgba(17, 24, 39, 0.45)" : "rgba(107, 114, 128, 0.35)"}
+            <polygon
+              points={silhouettePointsAttr}
+              fill={fillColor}
+              stroke={strokeColor}
               strokeWidth={1}
               vectorEffect="non-scaling-stroke"
               filter={primitiveSurfaceFilter}
+            />
+            <line
+              x1={accentStart.x}
+              y1={accentStart.y}
+              x2={accentEnd.x}
+              y2={accentEnd.y}
+              stroke={accentColor}
+              strokeWidth={1.2}
+              strokeLinecap="round"
+              vectorEffect="non-scaling-stroke"
+              style={{ pointerEvents: "none" }}
+            />
+            {toePoint && (
+              <circle
+                cx={toePoint.x}
+                cy={toePoint.y}
+                r={1.7}
+                fill={accentColor}
+                stroke="none"
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: "none" }}
+              />
+            )}
+            <ellipse
+              cx={segment.end.x}
+              cy={segment.end.y}
+              rx={hitRadiusX}
+              ry={hitRadiusY}
+              fill="rgba(0,0,0,0.001)"
+              stroke="none"
+              vectorEffect="non-scaling-stroke"
               transform={`rotate(${angleDeg} ${segment.end.x} ${segment.end.y})`}
             />
             <ellipse
               cx={segment.end.x}
               cy={segment.end.y}
-              rx={radiusX + 4}
-              ry={radiusY + 4}
+              rx={hitRadiusX + 4}
+              ry={hitRadiusY + 4}
               fill="rgba(0,0,0,0.001)"
               stroke="none"
               vectorEffect="non-scaling-stroke"
@@ -1435,7 +2017,90 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           </g>
         );
       })}
-      {skeletonVisible && collarTrianglePoints && (
+
+      {/* Hand and Foot Ground Interaction Anchors */}
+      {skeletonLayerVisible && showHelpers &&
+        (["l_hand", "r_hand", "l_foot", "r_foot"] as JointId[]).map((jointId) => {
+          const joint = world[jointId];
+          if (!joint || !isSkeletonJointVisible(jointId) || !isJointEnabled(jointId)) {
+            return null;
+          }
+          const displayPos = toDisplay(joint.worldPosition);
+          const isHand = HAND_JOINT_SET.has(jointId);
+          const isFoot = FOOT_JOINT_SET.has(jointId);
+          const radius = isHand ? 4.5 : 6;
+          const haloRadius = radius + 2;
+          return (
+            <g
+              key={`limb-tip-anchor-${jointId}`}
+              style={{
+                cursor:
+                  dragState?.kind === "joint" && dragState.jointId === jointId
+                    ? "grabbing"
+                    : "grab",
+                opacity: 1,
+              }}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                onJointPointerDown?.(jointId, joint.worldPosition.x, joint.worldPosition.y, event);
+                handleJointDragStart(jointId, event);
+              }}
+              onClick={(event) =>{
+                if (shouldSuppressClick()) {
+                  event.preventDefault();
+                  return;
+                }
+                event.stopPropagation();
+                onJointClick?.(jointId);
+              }}
+            >
+              {/* Interaction halo */}
+              <circle
+                cx={displayPos.x}
+                cy={displayPos.y}
+                r={haloRadius + 4}
+                fill="rgba(0,0,0,0.001)"
+                stroke="none"
+                vectorEffect="non-scaling-stroke"
+              />
+              {/* Visual halo */}
+              <circle
+                cx={displayPos.x}
+                cy={displayPos.y}
+                r={haloRadius}
+                fill="none"
+                stroke={isHand ? "rgba(59, 130, 246, 0.3)" : "rgba(34, 197, 94, 0.3)"}
+                strokeWidth={2.5}
+                opacity={0.7}
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: "none" }}
+              />
+              {/* Anchor circle */}
+              <circle
+                cx={displayPos.x}
+                cy={displayPos.y}
+                r={radius}
+                fill={isHand ? "#3b82f6" : "#22c55e"}
+                stroke="#111111"
+                strokeWidth={1.2}
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: "none" }}
+              />
+              {/* Center dot */}
+              <circle
+                cx={displayPos.x}
+                cy={displayPos.y}
+                r={radius * 0.4}
+                fill="#ffffff"
+                stroke="none"
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: "none" }}
+              />
+            </g>
+          );
+        })}
+
+      {skeletonLayerVisible && collarTrianglePoints && (
         <polygon
           points={collarTrianglePoints}
           fill="rgba(37, 99, 235, 0.08)"
@@ -1446,7 +2111,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         />
       )}
 
-      {skeletonVisible && (() => {
+      {skeletonLayerVisible && (() => {
         const neck = toDisplay(world.neck.worldPosition);
         const collar = toDisplay(world.collar.worldPosition);
         const torso = toDisplay(world.torso.worldPosition);
@@ -1509,7 +2174,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })()}
 
-      {skeletonVisible && primitiveTurnoverEnabled && (() => {
+      {skeletonLayerVisible && primitiveTurnoverEnabled && (() => {
         const leftShoulder = world.l_shoulder;
         const rightShoulder = world.r_shoulder;
         const waistJoint = world.waist;
@@ -1536,7 +2201,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })()}
 
-      {skeletonVisible && primitiveTurnoverEnabled && (() => {
+      {skeletonLayerVisible && primitiveTurnoverEnabled && (() => {
         const shinTargets: Array<{ knee: JointId; foot: JointId }> = [
           { knee: "l_knee", foot: "l_foot" },
           { knee: "r_knee", foot: "r_foot" },
@@ -1578,27 +2243,15 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           });
       })()}
 
-      {masksVisible && state.overlays.map((overlay) => {
-        const parent = overlay.parentJointId ? world[overlay.parentJointId] : null;
-        const parentWorldPosition = parent?.worldPosition ?? { x: 0, y: 0 };
-        const parentWorldRotation = parent?.worldRotationDeg ?? 0;
-        const rotatedOffset = rotateVec2(overlay.offset, parentWorldRotation);
-        const overlayPosition = addVec2(parentWorldPosition, rotatedOffset);
-        const drawPoint = toDisplay(overlayPosition);
-        const overlayRotation = normalizeAngleDeg(parentWorldRotation + overlay.rotation);
-        const overlayScaleX = overlay.scale * (overlay.flipX ? -1 : 1);
-        const overlayScaleY = overlay.scale * (overlay.flipY ? -1 : 1);
-        const filterValue = overlay.feather
-          ? `grayscale(1) contrast(1.1) blur(${overlay.feather}px)`
-          : "grayscale(1) contrast(1.1)";
+      {masksLayerVisible && state.overlays.map((overlay) => {
+        const overlayPose = resolveOverlayRenderPose(overlay, world);
+        const drawPoint = toDisplay(overlayPose.position);
+        const overlayRotation = overlayPose.rotationDeg;
+        const overlayScaleX = overlayPose.scaleX;
+        const overlayScaleY = overlayPose.scaleY;
+        const filterValue = toCssFilter(overlay.filters, overlay.feather);
         const parentAnchorTransform = `translate(${drawPoint.x}, ${drawPoint.y}) rotate(${overlayRotation}) scale(${OVERLAY_ANCHOR_SCALE})`;
-
-        const childJoint = overlay.childJointId ? world[overlay.childJointId] : null;
-        const childAnchorPosition =
-          childJoint && overlay.childJointId
-            ? addVec2(childJoint.worldPosition, rotateVec2(overlay.childOffset, childJoint.worldRotationDeg))
-            : null;
-        const childDisplay = childAnchorPosition ? toDisplay(childAnchorPosition) : null;
+        const childDisplay = overlayPose.childAnchorWorld ? toDisplay(overlayPose.childAnchorWorld) : null;
 
         return (
           <React.Fragment key={`overlay-${overlay.id}`}>
@@ -1614,60 +2267,62 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
                   width={OVERLAY_IMAGE_SIZE}
                   height={OVERLAY_IMAGE_SIZE}
                   preserveAspectRatio="xMidYMid meet"
-                  style={{ filter: filterValue, mixBlendMode: "multiply" }}
+                  style={{ filter: filterValue, mixBlendMode: toCssBlendMode(overlay.blendMode) }}
                 />
               </g>
             )}
-            <g
-              key={`overlay-anchor-parent-${overlay.id}`}
-              transform={parentAnchorTransform}
-              style={{
-                cursor: overlayInteractionEnabled ? "grab" : "not-allowed",
-                pointerEvents: overlayInteractionEnabled ? "auto" : "none",
-                opacity: overlayInteractionEnabled ? 1 : 0.5,
-              }}
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                handleOverlayAnchorPointerDown(overlay.id, "parent", event);
-              }}
-            >
-              <circle
-                cx={0}
-                cy={0}
-                r={13}
-                fill="rgba(0,0,0,0.001)"
-                stroke="none"
-                vectorEffect="non-scaling-stroke"
-              />
-              <image
-                href={overlay.dataUrl}
-                x={-OVERLAY_ANCHOR_SIZE / 2}
-                y={-OVERLAY_ANCHOR_SIZE / 2}
-                width={OVERLAY_ANCHOR_SIZE}
-                height={OVERLAY_ANCHOR_SIZE}
-                preserveAspectRatio="xMidYMid meet"
-                style={{ filter: "grayscale(1) contrast(1.2)", opacity: 0.65 }}
-              />
-              <image
-                href="/root-anchor.svg"
-                x={-6}
-                y={-6}
-                width={12}
-                height={12}
-                preserveAspectRatio="xMidYMid meet"
-                style={{ opacity: 0.95, pointerEvents: "none" }}
-              />
-              <circle
-                cx={0}
-                cy={0}
-                r={3.2}
-                fill={ROLE_COLORS.anchor}
-                stroke="#111111"
-                strokeWidth={1}
-                vectorEffect="non-scaling-stroke"
-              />
-            </g>
-            {childDisplay && (
+            {showHelpers && (
+              <g
+                key={`overlay-anchor-parent-${overlay.id}`}
+                transform={parentAnchorTransform}
+                style={{
+                  cursor: overlayInteractionEnabled ? "grab" : "not-allowed",
+                  pointerEvents: overlayInteractionEnabled ? "auto" : "none",
+                  opacity: overlayInteractionEnabled ? 1 : 0.5,
+                }}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  handleOverlayAnchorPointerDown(overlay.id, "parent", event);
+                }}
+              >
+                <circle
+                  cx={0}
+                  cy={0}
+                  r={13}
+                  fill="rgba(0,0,0,0.001)"
+                  stroke="none"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <image
+                  href={overlay.dataUrl}
+                  x={-OVERLAY_ANCHOR_SIZE / 2}
+                  y={-OVERLAY_ANCHOR_SIZE / 2}
+                  width={OVERLAY_ANCHOR_SIZE}
+                  height={OVERLAY_ANCHOR_SIZE}
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{ filter: "grayscale(1) contrast(1.2)", opacity: 0.65 }}
+                />
+                <image
+                  href="/root-anchor.svg"
+                  x={-6}
+                  y={-6}
+                  width={12}
+                  height={12}
+                  preserveAspectRatio="xMidYMid meet"
+                  style={{ opacity: 0.95, pointerEvents: "none" }}
+                />
+                <circle
+                  cx={0}
+                  cy={0}
+                  r={3.2}
+                  fill={ROLE_COLORS.anchor}
+                  stroke="#111111"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            )}
+            {showHelpers && childDisplay && (
               <g
                 key={`overlay-anchor-child-${overlay.id}`}
                 transform={`translate(${childDisplay.x}, ${childDisplay.y}) rotate(${overlayRotation}) scale(${OVERLAY_ANCHOR_SCALE})`}
@@ -1722,7 +2377,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {skeletonVisible && groundPins.map((pin) => (
+      {skeletonLayerVisible && showHelpers && groundPins.map((pin) => (
         <line
           key={`ground-${pin.jointId}-${pin.groundY}`}
           x1={-5000 * safeScale + safeOffsetX}
@@ -1735,7 +2390,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           vectorEffect="non-scaling-stroke"
         />
       ))}
-      {skeletonVisible && !groundPins.length && (
+      {skeletonLayerVisible && showHelpers && !groundPins.length && (
         <line
           x1={-5000 * safeScale + safeOffsetX}
           x2={5000 * safeScale + safeOffsetX}
@@ -1748,7 +2403,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           vectorEffect="non-scaling-stroke"
         />
       )}
-      {skeletonVisible && floorContactShadows.map(({ id, center }) => (
+      {skeletonLayerVisible && showHelpers && floorContactShadows.map(({ id, center }) => (
         <ellipse
           key={`floor-shadow-${id}`}
           cx={center.x}
@@ -1760,7 +2415,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           pointerEvents="none"
         />
       ))}
-      {skeletonVisible && showBalanceOverlay && (
+      {skeletonLayerVisible && showBalanceOverlay && (
         <>
           <line
             x1={centerOfMassDisplay.x}
@@ -1797,7 +2452,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         </>
       )}
 
-      {skeletonVisible && JOINT_IDS.map((jointId) => {
+      {skeletonLayerVisible && JOINT_IDS.map((jointId) => {
         if (jointId === "waist") {
           return null;
         }
@@ -1830,7 +2485,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {jointsVisible && JOINT_IDS.map((jointId) => {
+      {jointsLayerVisible && JOINT_IDS.map((jointId) => {
         if (jointId === "root") {
           return null;
         }
@@ -1846,7 +2501,8 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         const isExtremityJoint = EXTREMITY_JOINT_SET.has(jointId);
         const roleColor = isParentJoint ? ROLE_COLORS.parent : ROLE_COLORS.child;
         const dotSize = selected ? (isExtremityJoint ? 18 : 16) : isExtremityJoint ? 14 : 12;
-        const hitRadius = selected ? (isExtremityJoint ? 15 : 13) : isExtremityJoint ? 13 : 11;
+        const hitRadiusBase = selected ? (isExtremityJoint ? 15 : 13) : isExtremityJoint ? 13 : 11;
+        const hitRadius = hitRadiusBase + JOINT_HIT_RADIUS_PAD;
         const markerRadius = selected ? (isExtremityJoint ? 4.8 : 4.2) : isExtremityJoint ? 3.8 : 3.2;
         return (
           <g
@@ -1855,7 +2511,12 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
               cursor: enabled ? (dragState?.kind === "joint" && dragState.jointId === jointId ? "grabbing" : "grab") : "not-allowed",
               opacity: enabled ? 1 : 0.55,
             }}
-            onClick={() => {
+            onClick={(event) => {
+              if (shouldSuppressClick()) {
+                event.preventDefault();
+                event.stopPropagation();
+                return;
+              }
               if (enabled) {
                 onJointClick?.(jointId);
               }
@@ -1864,6 +2525,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
               if (!enabled) {
                 return;
               }
+              event.stopPropagation();
               onJointPointerDown?.(jointId, point.x, point.y, event);
               handleJointDragStart(jointId, event);
             }}
@@ -1921,18 +2583,59 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
         );
       })}
 
-      {jointsVisible && JOINT_IDS.map((jointId) => {
+      {jointsLayerVisible && JOINT_IDS.map((jointId) => {
         const target = state.ikTargets[jointId];
         if (!showIkTargets || !target?.active || !isJointEnabled(jointId) || !isJointVisible(jointId)) {
           return null;
         }
-        const drawTarget = toDisplay({ x: target.x, y: target.y });
+        const renderTarget = { x: target.x, y: target.y };
+        const drawTarget = toDisplay(renderTarget);
+        const jointWorld = world[jointId]?.worldPosition;
+        const jointDrawOffset = jointWorld
+          ? {
+              x: toDisplay(jointWorld).x - drawTarget.x,
+              y: toDisplay(jointWorld).y - drawTarget.y,
+            }
+          : null;
+        const hasJointOffset = jointDrawOffset !== null && Math.hypot(jointDrawOffset.x, jointDrawOffset.y) > 0.75;
+        const solvedTarget = targetDisplayPositions?.[jointId];
+        const solvedTargetOffset =
+          solvedTarget === undefined
+            ? null
+            : {
+                x: solvedTarget.x - renderTarget.x,
+                y: solvedTarget.y - renderTarget.y,
+              };
+        const hasSolvedOffset =
+          solvedTargetOffset !== null && Math.hypot(solvedTargetOffset.x, solvedTargetOffset.y) > 0.75;
+        const solvedDrawOffset = hasSolvedOffset
+          ? {
+              x: toDisplay({ x: solvedTarget!.x, y: solvedTarget!.y }).x - drawTarget.x,
+              y: toDisplay({ x: solvedTarget!.x, y: solvedTarget!.y }).y - drawTarget.y,
+            }
+          : null;
+        const solvedVsJointDelta =
+          solvedDrawOffset && jointDrawOffset
+            ? Math.hypot(solvedDrawOffset.x - jointDrawOffset.x, solvedDrawOffset.y - jointDrawOffset.y)
+            : Number.POSITIVE_INFINITY;
+        const showSolvedGuide = Boolean(solvedDrawOffset) && solvedVsJointDelta > 0.75;
+        const draggingThisTarget = dragState?.kind === "target" && dragState.jointId === jointId;
+        const hoveringThisTarget = hoveredTargetJointId === jointId;
+        const activeTargetScale = draggingThisTarget ? 1.2 : hoveringThisTarget ? 1.1 : 1;
+        const haloStroke = draggingThisTarget
+          ? "rgba(14, 165, 233, 0.95)"
+          : hoveringThisTarget
+            ? "rgba(8, 145, 178, 0.72)"
+            : "rgba(56, 189, 248, 0.45)";
         return (
           <g
             key={`target-${jointId}`}
             transform={`translate(${drawTarget.x}, ${drawTarget.y})`}
+            onPointerEnter={() => setHoveredTargetJointId(jointId)}
+            onPointerLeave={() => setHoveredTargetJointId((prev) => (prev === jointId ? null : prev))}
             onPointerDown={(event) => {
-              onTargetPointerDown?.(jointId, target.x, target.y, event);
+              event.stopPropagation();
+              onTargetPointerDown?.(jointId, renderTarget.x, renderTarget.y, event);
               handleTargetDragStart(jointId, event);
             }}
             style={{
@@ -1940,27 +2643,73 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
                 dragState?.kind === "target" && dragState.jointId === jointId ? "grabbing" : "grab",
             }}
           >
+            {hasJointOffset && jointDrawOffset && (
+              <line
+                x1={0}
+                y1={0}
+                x2={jointDrawOffset.x}
+                y2={jointDrawOffset.y}
+                stroke="rgba(56, 189, 248, 0.75)"
+                strokeWidth={1.3}
+                strokeDasharray="2.5 3.5"
+                vectorEffect="non-scaling-stroke"
+                style={{ pointerEvents: "none" }}
+              />
+            )}
+            {showSolvedGuide && solvedDrawOffset && (
+              <g pointerEvents="none">
+                <line
+                  x1={0}
+                  y1={0}
+                  x2={solvedDrawOffset.x}
+                  y2={solvedDrawOffset.y}
+                  stroke="rgba(37, 99, 235, 0.65)"
+                  strokeWidth={1.3}
+                  strokeDasharray="4 3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <circle
+                  cx={solvedDrawOffset.x}
+                  cy={solvedDrawOffset.y}
+                  r={6.2}
+                  fill="none"
+                  stroke="rgba(37, 99, 235, 0.72)"
+                  strokeWidth={1.2}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </g>
+            )}
             <circle
               cx={0}
               cy={0}
-              r={12}
+              r={TARGET_HIT_RADIUS}
               fill="rgba(0,0,0,0.001)"
               stroke="none"
               vectorEffect="non-scaling-stroke"
             />
+            <circle
+              cx={0}
+              cy={0}
+              r={7.5 * activeTargetScale}
+              fill="none"
+              stroke={haloStroke}
+              strokeWidth={1.6}
+              vectorEffect="non-scaling-stroke"
+              style={{ pointerEvents: "none" }}
+            />
             <image
               href="/root-anchor.svg"
-              x={-6}
-              y={-6}
-              width={12}
-              height={12}
+              x={-(6 * activeTargetScale)}
+              y={-(6 * activeTargetScale)}
+              width={12 * activeTargetScale}
+              height={12 * activeTargetScale}
               preserveAspectRatio="xMidYMid meet"
               style={{ pointerEvents: "none" }}
             />
             <circle
               cx={0}
               cy={0}
-              r={3.2}
+              r={3.2 * activeTargetScale}
               fill={ROLE_COLORS.anchor}
               stroke="#111111"
               strokeWidth={1}
@@ -1970,7 +2719,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           </g>
         );
       })}
-      {jointsVisible && JOINT_IDS.map((jointId) => {
+      {jointsLayerVisible && JOINT_IDS.map((jointId) => {
         const poleTarget = state.ikPoleTargets[jointId];
         if (!showIkTargets || !poleTarget?.active || !isJointEnabled(jointId) || !isJointVisible(jointId)) {
           return null;
@@ -1981,6 +2730,7 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
             key={`pole-${jointId}`}
             transform={`translate(${drawTarget.x}, ${drawTarget.y})`}
             onPointerDown={(event) => {
+              event.stopPropagation();
               onPoleTargetPointerDown?.(jointId, poleTarget.x, poleTarget.y, event);
               handlePoleTargetDragStart(jointId, event);
             }}
@@ -1990,10 +2740,10 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
             }}
           >
             <rect
-              x={-10}
-              y={-10}
-              width={20}
-              height={20}
+              x={-POLE_HIT_SIZE / 2}
+              y={-POLE_HIT_SIZE / 2}
+              width={POLE_HIT_SIZE}
+              height={POLE_HIT_SIZE}
               fill="rgba(0,0,0,0.001)"
               stroke="none"
               vectorEffect="non-scaling-stroke"
@@ -2013,6 +2763,27 @@ export const SkeletonViewport: React.FC<SkeletonViewportProps> = ({
           </g>
         );
       })}
+      </g>
+      {includeForegroundLayer && activeSceneLayers.foreground.visible && activeSceneLayers.foreground.dataUrl && (
+        <g
+          data-export-layer="foreground"
+          transform={buildSceneLayerTransform(activeSceneLayers.foreground)}
+          opacity={activeSceneLayers.foreground.alpha}
+          style={{
+            mixBlendMode: toCssBlendMode(activeSceneLayers.foreground.blendMode),
+          }}
+        >
+          <image
+            href={activeSceneLayers.foreground.dataUrl}
+            x={activeViewBox.x}
+            y={activeViewBox.y}
+            width={activeViewBox.width}
+            height={activeViewBox.height}
+            preserveAspectRatio={toPreserveAspectRatio(activeSceneLayers.foreground.fitMode)}
+            style={{ filter: toCssFilter(activeSceneLayers.foreground.filters) }}
+          />
+        </g>
+      )}
     </svg>
   );
 };

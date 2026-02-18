@@ -9,9 +9,10 @@
 - Core engine:
   - `/Users/bradleygeiser/Updated Model Bitruvius/Bitruvius-Core-Motion/src/rig-core/*`
 
-## Frozen Legacy Runtime
-- Legacy code moved to `/Users/bradleygeiser/Updated Model Bitruvius/Bitruvius-Core-Motion/legacy`.
-- Legacy tree is reference-only and should not receive feature work.
+## Legacy Runtime (Isolated Sandbox)
+- Legacy code remains under `/Users/bradleygeiser/Updated Model Bitruvius/Bitruvius-Core-Motion/legacy`.
+- The legacy tree is excluded from the active runtime and quality gate, and is used for migration reference and isolated experiments only.
+- Shippable/runtime work should target `/Users/bradleygeiser/Updated Model Bitruvius/Bitruvius-Core-Motion/src`.
 
 ## Quality Gate
 - Typecheck: `npm run typecheck`

@@ -24,6 +24,7 @@ interface MannequinProps {
   selectedBoneKeys: Set<keyof WalkingEnginePivotOffsets>;
   isPaused: boolean;
   maskImage?: string | null;
+  maskTransform?: MaskTransform;
   partTextures?: Partial<Record<keyof WalkingEngineProportions, string>>;
   maskTransforms?: Partial<Record<keyof WalkingEngineProportions, MaskTransform>>;
   partCustomPaths?: Partial<Record<keyof WalkingEngineProportions, string>>;
@@ -96,13 +97,14 @@ const LIMB_PART_KEYS: Set<keyof WalkingEngineProportions> = new Set([
 export const Mannequin: React.FC<MannequinProps> = ({
   pose, pivotOffsets, props, showPivots, showLabels, baseUnitH,
   onAnchorMouseDown, onBodyMouseDown, draggingBoneKey, selectedBoneKeys, isPaused,
-  maskImage, partTextures, maskTransforms, partCustomPaths, partScales, partOffsets, isGhost = false, showRig = false, renderMode = 'full', materialMode = 'default', rigVisuals, overrideProps, onPositionsUpdate, activePins = [], ikTargets,
+  maskImage, maskTransform, partTextures, maskTransforms, partCustomPaths, partScales, partOffsets, isGhost = false, showRig = false, renderMode = 'full', materialMode = 'default', rigVisuals, overrideProps, onPositionsUpdate, activePins = [], ikTargets,
   ikEnabled = false,
   ghostType, ghostOpacity = 0.6, partZOrder, headpieceContrastLevel = 'none', anchorFitEnabled = true, visualAnchorOverrides, hardcodedAssets, textureViewBoxOverrides, showPrimitives = true
 }) => {
     const activeProps = useMemo(() => overrideProps || JSON.parse(JSON.stringify(props)), [props, overrideProps]);
     const renderOrder = useMemo(() => (Object.keys(partZOrder) as (keyof WalkingEngineProportions)[]).sort((a, b) => partZOrder[a] - partZOrder[b]), [partZOrder]);
     const isSkeletonOnly = renderMode === 'skeleton_only' && !isGhost;
+    const resolvedMaskOverlayTransform = maskTransform ?? { x: 0, y: 0, rotation: 0, scale: 1, mode: 'project' };
 
     const calculations = useMemo(() => {
         const trans: GlobalPositions = {};
@@ -395,6 +397,9 @@ export const Mannequin: React.FC<MannequinProps> = ({
                         ? "fill-slate-100/70"
                         : (partKey === 'collar' ? 'fill-olive' : 'fill-slate-800');
 
+                const overlayDimension = Math.max(300, Math.max(renderWidth, renderLength) * 2);
+                const overlayOffset = -overlayDimension / 2;
+
                 return (
                     <g key={partKey} transform={`translate(${t.position.x}, ${t.position.y}) rotate(${t.rotation})`}>
                         <Bone 
@@ -433,6 +438,22 @@ export const Mannequin: React.FC<MannequinProps> = ({
                             anchorFitEnabled={anchorFitEnabled}
                             maskFilter={maskFilter}
                         />
+                        {partKey === 'head' && maskImage && (
+                            <g
+                                transform={`translate(${resolvedMaskOverlayTransform.x}, ${resolvedMaskOverlayTransform.y}) rotate(${resolvedMaskOverlayTransform.rotation}) scale(${resolvedMaskOverlayTransform.scale})`}
+                                opacity="0.9"
+                            >
+                                <image
+                                    href={maskImage}
+                                    x={overlayOffset}
+                                    y={overlayOffset}
+                                    width={overlayDimension}
+                                    height={overlayDimension}
+                                    preserveAspectRatio="xMidYMid meet"
+                                    pointerEvents="none"
+                                />
+                            </g>
+                        )}
                     </g>
                 );
             })}

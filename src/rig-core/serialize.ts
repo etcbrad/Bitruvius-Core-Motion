@@ -1,7 +1,12 @@
 import {
+  BackgroundShadowSettings,
   ConstraintSettings,
   ControlMode,
+  IkSolverId,
+  DEFAULT_BACKGROUND_SHADOW_SETTINGS,
   DEFAULT_CONSTRAINT_SETTINGS,
+  DEFAULT_IMAGE_FILTER_SETTINGS,
+  ImageFilterSettings,
   IkSolveMode,
   IkPoleTarget,
   IkTarget,
@@ -9,30 +14,38 @@ import {
   JointState,
   JOINT_IDS,
   PinConstraint,
+  RigSceneLayers,
   RigState,
+  SceneImageLayer,
+  SceneLayerFitMode,
+  SkeletonVersion,
   SvgOverlay,
-  Vec2,
   createInitialRigState,
 } from "./types";
 import { cloneJoints, computeWorldTransforms } from "./graph";
 import {
+  normalizeImageFilterSettings,
+  normalizeLayerBlendMode,
   normalizeOverlayAlpha,
   normalizeOverlayFeather,
   normalizeOverlayScale,
 } from "./overlay";
 
 export type RigSnapshotV2 = {
-  version: 2;
+  version: 2 | 3;
   mode: ControlMode;
   ikSolveMode: IkSolveMode;
+  ikSolver?: IkSolverId;
   ikStretchEnabled: boolean;
   constraintSettings: ConstraintSettings;
+  skeletonVersion?: SkeletonVersion;
   joints: Record<JointId, JointState>;
   pins: PinConstraint[];
   ikTargets: Record<JointId, IkTarget | undefined>;
   ikPoleTargets: Record<JointId, IkPoleTarget | undefined>;
   overlays: SvgOverlay[];
   selectedJointId: JointId | null;
+  sceneLayers?: RigSceneLayers;
 };
 
 const LEGACY_PIVOT_TO_JOINT: Partial<Record<string, JointId>> = {
@@ -69,6 +82,11 @@ const parseControlMode = (value: unknown): ControlMode | undefined =>
 const parseIkSolveMode = (value: unknown): IkSolveMode | undefined =>
   value === "single_chain" || value === "limbs_only" || value === "whole_body_graph" ? value : undefined;
 
+const parseSkeletonVersion = (
+  value: unknown,
+  fallback: SkeletonVersion
+): SkeletonVersion => (value === "v1" || value === "v2" ? value : fallback);
+
 const parseConstraintSettings = (value: unknown): ConstraintSettings => {
   if (!isRecord(value)) {
     return { ...DEFAULT_CONSTRAINT_SETTINGS };
@@ -94,10 +112,87 @@ const parseConstraintSettings = (value: unknown): ConstraintSettings => {
       typeof value.clampGroundedIkTargetReach === "boolean"
         ? value.clampGroundedIkTargetReach
         : DEFAULT_CONSTRAINT_SETTINGS.clampGroundedIkTargetReach,
+    fkFrictionOff:
+      typeof value.fkFrictionOff === "boolean"
+        ? value.fkFrictionOff
+        : DEFAULT_CONSTRAINT_SETTINGS.fkFrictionOff,
+    ikFrictionOff:
+      typeof value.ikFrictionOff === "boolean"
+        ? value.ikFrictionOff
+        : DEFAULT_CONSTRAINT_SETTINGS.ikFrictionOff,
   };
 };
 
 const clonePins = (pins: PinConstraint[]): PinConstraint[] => pins.map((pin) => ({ ...pin }));
+
+const parseFitMode = (value: unknown): SceneLayerFitMode =>
+  value === "contain" || value === "stretch" || value === "cover" ? value : "cover";
+
+const parseFilters = (
+  value: unknown,
+  fallback: ImageFilterSettings = DEFAULT_IMAGE_FILTER_SETTINGS
+): ImageFilterSettings =>
+  isRecord(value)
+    ? normalizeImageFilterSettings(
+        {
+          brightness: asNumber(value.brightness),
+          contrast: asNumber(value.contrast),
+          saturate: asNumber(value.saturate),
+          hueRotateDeg: asNumber(value.hueRotateDeg),
+          blurPx: asNumber(value.blurPx),
+          grayscale: asNumber(value.grayscale),
+          sepia: asNumber(value.sepia),
+          invert: asNumber(value.invert),
+        },
+        fallback
+      )
+    : normalizeImageFilterSettings(undefined, fallback);
+
+const parseSceneLayer = (
+  value: unknown,
+  fallback: SceneImageLayer
+): SceneImageLayer => {
+  if (!isRecord(value)) {
+    return {
+      ...fallback,
+      filters: { ...fallback.filters },
+      transform: { ...fallback.transform },
+    };
+  }
+  const transform = isRecord(value.transform) ? value.transform : {};
+  return {
+    name: typeof value.name === "string" ? value.name : fallback.name,
+    dataUrl: typeof value.dataUrl === "string" ? value.dataUrl : null,
+    visible: typeof value.visible === "boolean" ? value.visible : fallback.visible,
+    alpha: normalizeOverlayAlpha(asNumber(value.alpha) ?? fallback.alpha),
+    blendMode: normalizeLayerBlendMode(value.blendMode, fallback.blendMode),
+    filters: parseFilters(value.filters, fallback.filters),
+    transform: {
+      x: asNumber(transform.x) ?? fallback.transform.x,
+      y: asNumber(transform.y) ?? fallback.transform.y,
+      rotation: asNumber(transform.rotation) ?? fallback.transform.rotation,
+      scaleX: asNumber(transform.scaleX) ?? fallback.transform.scaleX,
+      scaleY: asNumber(transform.scaleY) ?? fallback.transform.scaleY,
+    },
+    fitMode: parseFitMode(value.fitMode),
+  };
+};
+
+const parseBackgroundShadow = (
+  value: unknown,
+  fallback: BackgroundShadowSettings
+): BackgroundShadowSettings => {
+  if (!isRecord(value)) {
+    return { ...fallback };
+  }
+  return {
+    enabled: typeof value.enabled === "boolean" ? value.enabled : fallback.enabled,
+    alpha: normalizeOverlayAlpha(asNumber(value.alpha) ?? fallback.alpha),
+    blurPx: asNumber(value.blurPx) ?? fallback.blurPx,
+    offsetX: asNumber(value.offsetX) ?? fallback.offsetX,
+    offsetY: asNumber(value.offsetY) ?? fallback.offsetY,
+  };
+};
 
 const parseOverlay = (value: unknown): SvgOverlay | undefined => {
   if (!isRecord(value)) {
@@ -135,6 +230,8 @@ const parseOverlay = (value: unknown): SvgOverlay | undefined => {
       x: childOffsetRecord.x ?? 0,
       y: childOffsetRecord.y ?? 0,
     },
+    segmentRestLength: asNumber(value.segmentRestLength) ?? null,
+    segmentRestAngleDeg: asNumber(value.segmentRestAngleDeg) ?? null,
     rotation: asNumber(value.rotation) ?? 0,
     scale: normalizeOverlayScale(asNumber(value.scale) ?? 1),
     flipX: typeof value.flipX === "boolean" ? value.flipX : false,
@@ -142,6 +239,8 @@ const parseOverlay = (value: unknown): SvgOverlay | undefined => {
     visible: typeof value.visible === "boolean" ? value.visible : true,
     alpha: normalizeOverlayAlpha(asNumber(value.alpha) ?? 1),
     feather: normalizeOverlayFeather(asNumber(value.feather) ?? 0),
+    blendMode: normalizeLayerBlendMode(value.blendMode, "multiply"),
+    filters: parseFilters(value.filters, normalizeImageFilterSettings({ grayscale: 1, contrast: 1.1 })),
   };
 };
 
@@ -179,20 +278,54 @@ const cloneOverlays = (overlays: SvgOverlay[]): SvgOverlay[] =>
     ...overlay,
     offset: { ...overlay.offset },
     childOffset: { ...overlay.childOffset },
+    filters: { ...overlay.filters },
   }));
 
-export const toRigSnapshotV2 = (state: RigState): RigSnapshotV2 => ({
-  version: 2,
+const cloneSceneLayers = (sceneLayers: RigSceneLayers): RigSceneLayers => ({
+  background: {
+    ...sceneLayers.background,
+    filters: { ...sceneLayers.background.filters },
+    transform: { ...sceneLayers.background.transform },
+  },
+  foreground: {
+    ...sceneLayers.foreground,
+    filters: { ...sceneLayers.foreground.filters },
+    transform: { ...sceneLayers.foreground.transform },
+  },
+  backgroundShadow: { ...sceneLayers.backgroundShadow },
+});
+
+export const cloneRigState = (state: RigState): RigState => ({
   mode: state.mode,
   ikSolveMode: state.ikSolveMode,
+  ikSolver: state.ikSolver,
   ikStretchEnabled: state.ikStretchEnabled,
   constraintSettings: { ...state.constraintSettings },
+  skeletonVersion: state.skeletonVersion,
   joints: cloneJoints(state.joints),
   pins: clonePins(state.pins),
   ikTargets: cloneIkTargets(state.ikTargets),
   ikPoleTargets: cloneIkPoleTargets(state.ikPoleTargets),
   overlays: cloneOverlays(state.overlays),
   selectedJointId: state.selectedJointId,
+  sceneLayers: cloneSceneLayers(state.sceneLayers),
+});
+
+export const toRigSnapshotV2 = (state: RigState): RigSnapshotV2 => ({
+  version: 3,
+  mode: state.mode,
+  ikSolveMode: state.ikSolveMode,
+  ikSolver: state.ikSolver,
+  ikStretchEnabled: state.ikStretchEnabled,
+  constraintSettings: { ...state.constraintSettings },
+  skeletonVersion: state.skeletonVersion,
+  joints: cloneJoints(state.joints),
+  pins: clonePins(state.pins),
+  ikTargets: cloneIkTargets(state.ikTargets),
+  ikPoleTargets: cloneIkPoleTargets(state.ikPoleTargets),
+  overlays: cloneOverlays(state.overlays),
+  selectedJointId: state.selectedJointId,
+  sceneLayers: cloneSceneLayers(state.sceneLayers),
 });
 
 const parsePin = (value: unknown): PinConstraint | undefined => {
@@ -262,14 +395,20 @@ const parseJoint = (jointId: JointId, value: unknown, fallback: JointState): Joi
 
 export const fromRigSnapshotV2 = (snapshot: unknown): RigState => {
   const fallback = createInitialRigState();
-  if (!isRecord(snapshot) || snapshot.version !== 2) {
+  if (
+    !isRecord(snapshot) ||
+    !("version" in snapshot) ||
+    (snapshot.version !== 2 && snapshot.version !== 3)
+  ) {
     return fallback;
   }
 
   const mode = parseControlMode(snapshot.mode) ?? fallback.mode;
   const ikSolveMode = parseIkSolveMode(snapshot.ikSolveMode) ?? fallback.ikSolveMode;
   const ikStretchEnabled = Boolean(snapshot.ikStretchEnabled);
+  const ikSolver = snapshot.ikSolver === "ccd" || snapshot.ikSolver === "hybrid" ? snapshot.ikSolver : "fabrik";
   const constraintSettings = parseConstraintSettings(snapshot.constraintSettings);
+  const skeletonVersion = parseSkeletonVersion(snapshot.skeletonVersion, fallback.skeletonVersion);
   const selectedJointId = snapshot.selectedJointId === null ? null : asJointId(snapshot.selectedJointId) ?? null;
 
   const joints = cloneJoints(fallback.joints);
@@ -329,11 +468,22 @@ export const fromRigSnapshotV2 = (snapshot: unknown): RigState => {
   }
 
   const snapshotOverlays = parseOverlays(snapshot.overlays);
+  const rawSceneLayers = isRecord(snapshot.sceneLayers) ? snapshot.sceneLayers : undefined;
+  const sceneLayers: RigSceneLayers = {
+    background: parseSceneLayer(rawSceneLayers?.background, fallback.sceneLayers.background),
+    foreground: parseSceneLayer(rawSceneLayers?.foreground, fallback.sceneLayers.foreground),
+    backgroundShadow: parseBackgroundShadow(
+      rawSceneLayers?.backgroundShadow,
+      fallback.sceneLayers.backgroundShadow
+    ),
+  };
 
   return {
     mode,
     ikSolveMode,
+    ikSolver,
     ikStretchEnabled,
+    skeletonVersion,
     constraintSettings,
     joints,
     pins,
@@ -341,6 +491,7 @@ export const fromRigSnapshotV2 = (snapshot: unknown): RigState => {
     ikPoleTargets,
     overlays: snapshotOverlays.length ? snapshotOverlays : cloneOverlays(fallback.overlays),
     selectedJointId,
+    sceneLayers,
   };
 };
 
@@ -461,16 +612,26 @@ export const migrateLegacyPayloadToRigSnapshotV2 = (payload: unknown): RigSnapsh
   const pins = parseLegacyPins(legacy, joints);
 
   return {
-    version: 2,
+    version: 3,
     mode,
     ikSolveMode,
+    ikSolver: "fabrik",
     ikStretchEnabled: false,
     constraintSettings: { ...DEFAULT_CONSTRAINT_SETTINGS },
+    skeletonVersion: "v1",
     joints,
     pins,
     ikTargets,
     ikPoleTargets,
     overlays: [],
     selectedJointId: asJointId(legacy.selectedJointId) ?? null,
+    sceneLayers: {
+      background: parseSceneLayer(undefined, base.sceneLayers.background),
+      foreground: parseSceneLayer(undefined, base.sceneLayers.foreground),
+      backgroundShadow: parseBackgroundShadow(
+        undefined,
+        DEFAULT_BACKGROUND_SHADOW_SETTINGS
+      ),
+    },
   };
 };

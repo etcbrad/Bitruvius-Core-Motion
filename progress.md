@@ -418,3 +418,275 @@ Would you like me to provide the specific CSS or Canvas logic to hide those mask
 - Overlay imports no longer write defaults into storage (`applyImportedOverlay` no longer calls `persistDefaultMask`).
 - Updated runtime-defaults note in `src/rig-core/defaultOverlays.ts` to reflect that startup defaults are intentionally empty.
 - Verification: `npm run ci` passes (typecheck, lint, tests, build).
+
+## 2026-02-17 - Console Ring Wheel + Reset
+- Replaced the previous slider-centric command wheel with a ring-first wheel in `src/components/CanvasCommandWheel.tsx`.
+  - Supports `1/2/3` ring layouts.
+  - Outer ring selects tool context (`FK Rot`, `FK Move`, `IK Target`, `Camera`, `Mask`) when available.
+  - Middle ring is the active value control (rotate / XY drag / scalar drag).
+  - Optional third ring switches camera (`Offset` / `Zoom` / `Focus`) or mask (`Offset` / `Scale` / `Rotate`) sub-modes.
+  - Center hub now exposes axis lock (`XY/X/Y`) and precision (`Coarse/Fine`) plus reset trigger.
+- Updated `src/rig-adapter/RigCoreV2Shell.tsx` to remove old wheel density flow and wire the new ring-mode interactions.
+  - Removed old `CanvasWheelDensity` usage and slider-wheel callbacks.
+  - Added ring state for tool, layers, precision, axis lock, and camera/mask sub-modes.
+  - Added `Reset Console` action that restores console UI defaults (tabs, visibility toggles, camera controls, wheel state, and interaction toggles) without resetting pose data.
+  - Replaced the top HUD wheel button with `Rings: <1|2|3>` cycling.
+- Validation:
+  - `npm run build` passes.
+- Playwright check attempt (develop-web-game skill loop):
+  - Started preview server on `http://localhost:3000`.
+  - Attempted running `$HOME/.codex/skills/develop-web-game/scripts/web_game_playwright_client.js`.
+  - Blocked by missing dependency: `Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'playwright'`.
+- Added quick `+/-` click nudges to the new command wheel center so the operator can adjust rotate/XY/zoom/scale without dragging, reducing the current wheel friction complaints.
+- Added a “Selected Part” card at the top of the console (joint + overlay selectors, FK/IK toggles, diagnostics, mirror/turnover/auto-clone toggles, axis controls, and mask upload/list/transform controls) so every piece-specific option is visible in one place instead of scattered across rig/skeletals/slm tabs.
+- Removed redundant joint/mask controls from the rig & skeletals tabs, leaving only constraint/joint-enable details and a compact IK solver card for the remaining tab content; the SLM tab now just surfaces mask-mode toggles and a pointer to the shared card.
+- Introduced axis control helper rendering + nudge buttons, fused mask visibility toggles with the overlay list, and consolidated overlay detail actions (scale/rotation/offset/anchor) under the active overlay within the part card.
+
+## 2026-02-18 - Drag Reactivity + Solve Jitter Reduction
+- Target: keep skeletal movement live/reactive under fast pointer input by reducing redundant IK solve churn.
+- Updated `src/rig-adapter/useRigAdapter.ts` drag dispatch path:
+  - `dragMove` now batches to animation frames (RAF) instead of dispatching every raw pointer sample.
+  - Added duplicate-point suppression (`DRAG_MOVE_EPSILON`) so repeated coordinates are dropped.
+  - `dragEnd` now flushes any pending drag point before dispatching `DRAG_END`, preserving final pointer position.
+  - Added cleanup/cancel handling for pending RAF drag work.
+- Updated `src/rig-core/reducer.ts` no-op guards:
+  - Added epsilon-based point delta checks for drag state updates.
+  - `IK_SET_TARGET` / `IK_SET_POLE_TARGET` now early-return when target coordinates are unchanged.
+  - `DRAG_MOVE` now short-circuits unchanged points and avoids unnecessary IK solves when target state is identical.
+- Validation:
+  - `npm run test` passes.
+  - `npm run lint` passes.
+  - `npm run build` passes.
+  - `npm run typecheck` currently fails due pre-existing `CanvasCommandWheel` type mismatch in `src/rig-adapter/RigCoreV2Shell.tsx` (missing `CanvasWheelDensity` export / prop mismatch), unrelated to this drag patch.
+  - Ran develop-web-game Playwright client smoke against `http://localhost:3000` and inspected capture output:
+    - `output/web-game/smoothness-2026-02-18-pass1/shot-0.png`
+    - No `errors-*.json` emitted in that run.
+
+## TODO / Suggestions For Next Agent
+- Add a focused interaction replay harness for true pointer-drag trajectories (the current skill client supports click/key bursts but not continuous drag path playback), then baseline frame-time/solver-time before and after each tuning change.
+
+## 2026-02-18 - Canvas Workflow Rail + Redundancy Trim
+- Reworked the on-canvas top controls into a single workflow rail for quick intent switching:
+  - Added one-click `Pose`, `Compose`, `Rotate`, `IK`, `Play` modes that atomically set rig mode + wheel behavior + interaction gating.
+  - `Compose` now enables mask+skeletal interaction directly in focus view (no tab hop required) for faster canvas-only calibration.
+- Removed redundant quick toggles from the canvas top bar (turnover/advanced/jump duplicates), replacing them with:
+  - compact workflow rail,
+  - compact utility controls (`View`, `Rings`, `Console`),
+  - active workflow descriptor chip.
+- Improved runtime responsiveness and reduced unnecessary updates:
+  - Deferred `poseDataText` JSON serialization to only when Data module is visible (avoids full-state stringify every render).
+  - Added overlay-anchor drag dedupe cache to drop near-identical pointer updates and reduce overlay update churn.
+- Updated wheel subtitle to include active workflow context.
+
+### Validation
+- `npm run ci` passes (typecheck, lint, tests, build).
+- Installed missing Playwright runtime locally (`playwright` dependency + browsers) to unblock smoke validation.
+- Ran develop-web-game client against preview server and captured screenshot:
+  - `output/web-game/canvas-workflow-2026-02-18/shot-0.png`
+- Visual check confirms the new workflow rail renders and remains operable over the canvas.
+
+## TODO / Suggestions For Next Agent
+- Add keyboard shortcuts for workflow rail (`1-5` mapping to Pose/Compose/Rotate/IK/Play) to further cut pointer travel.
+- Extend compose mode with an inline active-overlay picker on canvas so mask-selection no longer requires sidebar list access.
+- Add a deterministic `window.render_game_to_text` + `window.advanceTime(ms)` bridge for richer automated assertions in the develop-web-game loop.
+
+## 2026-02-18 - Workflow Shortcuts + Compose Overlay Picker
+- Implemented keyboard shortcuts for workflow rail:
+  - `1` => Pose
+  - `2` => Compose
+  - `3` => Rotate
+  - `4` => IK
+  - `5` => Play
+  - Includes both top-row digits and numpad digits.
+- Added on-canvas compose overlay picker so mask selection no longer requires sidebar access:
+  - Compose-only control strip appears under the top workflow controls in canvas focus.
+  - Supports `Prev` / `Next` cycling, direct select dropdown, and active overlay `Hide/Show` toggle.
+  - Picker state is bound to existing `activeOverlayId` and overlay visibility state.
+- Added active-overlay helpers:
+  - `activeOverlay` memo
+  - `activeOverlayIndex` memo
+  - `cycleActiveOverlay` callback
+- Updated workflow button titles to include shortcut hints `(1-5)`.
+
+### Validation
+- `npm run ci` passes.
+- Focused browser verification script confirms shortcuts:
+  - result: `{"Digit2":true,"Digit5":true,"Digit1":true}`
+- Focused compose verification script confirms compose activation + on-canvas picker visibility:
+  - result: `{"composeActive":"true","pickerVisible":true}`
+- Verified screenshot showing Compose active and picker visible:
+  - `output/web-game/canvas-workflow-2026-02-18-compose-verified.png`
+
+## 2026-02-18 - Fluid Motion Continuity Pass (Live + Interpolation + Rotation)
+- Added drag-path interpolation in `src/rig-adapter/useRigAdapter.ts` so `DRAG_MOVE` updates are eased across RAF frames instead of committing large pointer jumps in one step.
+  - Introduced bounded per-frame drag movement (`DRAG_MOVE_INTERPOLATION_ALPHA`, min/max step clamps).
+  - Retained deterministic end-state by force-flushing the final drag sample on drag end.
+- Hardened FK/wheel rotation interaction in `src/rig-adapter/RigCoreV2Shell.tsx` against pointer glitches.
+  - Added elapsed-time-based delta clamp (`clampRotationDeltaForElapsed`) to suppress outlier rotation spikes.
+  - Added near-pivot guard (`FK_ROTATION_MIN_RADIUS`) to avoid singular angle jumps when pointer is too close to the rotation pivot.
+- Added viewport render interpolation in `src/components/SkeletonViewport.tsx` so visual transforms blend toward incoming rig state while keeping hierarchy connected.
+  - New local joint interpolation pipeline (`cloneJointStateMap` + `blendJointStateMap`) with drag-aware responsiveness.
+  - World rendering now uses interpolated joints for interactive mode; export mode still uses raw joints.
+- Updated animation playback in `src/rig-adapter/AnimationPanel.tsx` to use capped frame-delta stepping (instead of absolute elapsed-from-start), reducing timeline jumps after dropped frames/hitches.
+
+### Validation
+- `npm run ci` passes (typecheck, lint, tests, build).
+- develop-web-game Playwright smoke:
+  - `output/web-game/fluidity-2026-02-18-pass1/shot-0.png`
+  - No `errors-*.json` emitted in this run.
+- Focused rotation drag probe (with an intentional large pointer jump):
+  - `output/web-game/fluidity-2026-02-18-rotation/shot-0-before.png`
+  - `output/web-game/fluidity-2026-02-18-rotation/shot-1-glitch-peak.png`
+  - `output/web-game/fluidity-2026-02-18-rotation/shot-2-drag-end.png`
+  - `output/web-game/fluidity-2026-02-18-rotation/shot-3-release-early.png`
+  - `output/web-game/fluidity-2026-02-18-rotation/shot-4-release-settle.png`
+  - `output/web-game/fluidity-2026-02-18-rotation/errors.json` => `[]`
+
+## TODO / Suggestions For Next Agent
+- Add a permanent deterministic drag replay harness (in-repo script) that drives SVG joint drags without temporary probes, then compare per-frame joint deltas before/after smoothing changes.
+
+## 2026-02-18 - IK Controls Simplification Pass
+- Simplified IK control surface in `src/rig-adapter/RigCoreV2Shell.tsx` to reduce cognitive load during posing.
+- Added direct helper callbacks:
+  - `setSelectedTarget`
+  - `clearSelectedTarget`
+  - `clearSelectedPoleTarget`
+- Simplified `Model` card behavior:
+  - FK rotation controls now render only in FK mode (hidden in IK mode).
+  - IK mode now shows a compact `IK Quick Controls` section with:
+    - numeric X/Y target inputs,
+    - `Set To Joint` and `Clear Target` actions,
+    - compact pole X/Y inputs + `Set Pole To Joint` / `Clear Pole` actions when a pole joint exists.
+- Simplified advanced rig IK controls:
+  - Kept quick controls visible (`IK Solve Mode`, `Allow IK Stretch`).
+  - Moved solver selection + constraint toggles into a collapsed `Advanced IK Engine` details block.
+  - Reduced duplicate slider+number clutter in IK target/pole section by keeping number-driven quick controls and clear/reset actions.
+
+### Validation
+- `npm run ci` passes (typecheck, lint, tests, build).
+- develop-web-game screenshot pass:
+  - `output/web-game/ik-controls-simple-2026-02-18/shot-0.png`
+- Focused Playwright UI capture (sidebar + IK mode):
+  - `output/web-game/ik-controls-simple-2026-02-18-ui/shot-0-ik-panel.png`
+  - `output/web-game/ik-controls-simple-2026-02-18-ui/errors.json` => `[]`
+
+## 2026-02-18 - IK Canvas Menu Right-Side Layout
+- Moved the on-canvas IK menu panel to the right-hand side in focus view and constrained its footprint so it no longer crosses the character area.
+- Updated top overlay container layout in `src/rig-adapter/RigCoreV2Shell.tsx`:
+  - top control stack now uses a full-width overlay rail with `alignItems: flex-start`.
+  - IK panel now uses `alignSelf: flex-end` to anchor on the right.
+- Added hard width and viewport-safe size limits to IK panel:
+  - width: `min(360px, calc(100vw - 36px))`
+  - maxHeight: `calc(100vh - 180px)` + vertical scroll fallback.
+
+### Validation
+- `npm run ci` passes.
+- Focused Playwright capture in IK canvas mode:
+  - `output/web-game/ik-canvas-menu-right-2026-02-18/shot-0-ik-canvas-right.png`
+  - `output/web-game/ik-canvas-menu-right-2026-02-18/errors.json` => `[]`
+
+## 2026-02-18 - Canvas Menu Console Unification + Side Console Repurpose
+- Converted workflow controls into toggleable canvas menus so each rail button (`Pose`, `Compose`, `Rotate`, `IK`, `Play`) owns a canvas panel.
+- Enabled simultaneous canvas menu usage (menus stay independently open), so combined workflows like animation + IK/FK can be operated together.
+- Added new canvas panels:
+  - `Pose Canvas Menu` (FK/IK mode, joint select, XY input, mirror/turnover toggles)
+  - `Rotate Canvas Menu` (FK rotation controls + nudges + axis/precision quick toggles)
+  - `Play / Animation Menu` (runtime/jump toggle + embedded animation panel)
+  - Existing `Compose` and `IK` canvas panels kept and wired into the same menu system.
+- Repurposed the side console into dedicated tabs only:
+  - `Exports`
+  - `Data`
+  - `Performance`
+- Side console now defaults visible at startup by switching default canvas UX preset to `balanced`.
+- Legacy multi-module sidebar block is retained in code but disabled from rendering (`false && showSidebar`) while the new side console panel is active.
+
+### Validation
+- `npm run ci` passes (typecheck, lint, tests, build).
+- develop-web-game Playwright capture (escalated run):
+  - `output/web-game/canvas-console-all-menus-2026-02-18/shot-0.png`
+- Additional compose-click probe run (helper selector was located but timed out during click stability in this environment):
+  - `output/web-game/canvas-console-all-menus-2026-02-18-compose/shot-0.png`
+
+## 2026-02-18 - Performance + Fluidity + Interaction Audit (Follow-up)
+- Patched pointer-drag lifecycle stability in `src/components/CanvasCommandWheel.tsx`:
+  - Added global listener teardown (`pointerup` + `pointercancel` + `blur`) so drag handlers cannot leak/stick across mode switches/unmount.
+  - Added unmount cleanup that terminates active drags and clears listeners.
+  - Added pointer capture on drag start for more stable wheel control handoff.
+- Reduced ghost-trail render churn in `src/components/SkeletonViewport.tsx`:
+  - Added `pruneGhostFrames` helper that returns the same frame array when nothing expired.
+  - Replaced repeated `.filter(...)` state updates in ghost sampling/tick loops with the stable pruning helper to avoid avoidable allocations/state commits.
+- Reduced reducer-side allocation overhead in `src/rig-core/reducer.ts`:
+  - `rigidLocalTranslations` cache now reuses prior reference when joints are unchanged (instead of cloning every action).
+  - Added regression test in `src/rig-core/reducer.test.ts` to lock this behavior.
+- Added deterministic automation bridge in `src/rig-adapter/RigCoreV2Shell.tsx`:
+  - Exposed `window.render_game_to_text()` with concise current rig state (joints, active targets/poles, pins, overlays, diagnostics).
+  - Exposed `window.advanceTime(ms)` for predictable frame-time stepping in browser automation loops.
+
+### Validation
+- `npm run ci` passes (typecheck, lint, tests, build).
+- develop-web-game baseline capture:
+  - `output/web-game/audit-2026-02-18-baseline/shot-0.png`
+- develop-web-game post-fix capture:
+  - `output/web-game/audit-2026-02-18-postfix/shot-0.png`
+  - `output/web-game/audit-2026-02-18-postfix/state-0.json` (new deterministic state output present)
+- No `errors-*.json` emitted in either audit run.
+
+## 2026-02-18 - Added Dedicated Animation Workflow Canvas Menu
+- Added a new workflow button: `Animation` (6th button on the top canvas rail).
+- Added `animation` to canvas workflow mode/types/labels/accents and keyboard shortcut mapping:
+  - `Digit6` / `Numpad6` => Animation.
+- Added dedicated `Animation Canvas Menu` panel and moved full animation controls there via `AnimationPanel` (includes interpolation controls and all prior timeline tooling).
+- Kept `Play` as its own runtime-focused canvas menu (jump/runtime controls only).
+- Updated workflow button menu toggling to true per-button toggle behavior (`!prev[mode]`) so any open menu can be closed reliably.
+- Added workflow ordering constant so all workflow button/menu loops include `Animation` consistently.
+
+### Validation
+- `npm run ci` passes.
+- develop-web-game Playwright run (button visible):
+  - `output/web-game/canvas-animation-menu-2026-02-18/shot-0.png`
+- Forced Playwright click validation to confirm animation panel opens with interpolation controls visible:
+  - `output/web-game/canvas-animation-menu-open-forced-2026-02-18/shot-0.png`
+  - `output/web-game/canvas-animation-menu-clean-2026-02-18/shot-0.png`
+
+## 2026-02-18 - IK Direct-Drag Unlocked (HUD Decoupling)
+- Rewired IK target control precedence so direct canvas manipulation stays authoritative:
+  - `RigCoreV2Shell`: IK numeric fields now read/write the true active target coordinates (`ikTargets`) instead of solver-clamped display coordinates.
+  - `RigCoreV2Shell`: target pointer-down now clears a different sticky target first, preventing sticky tracking from hijacking a new drag start.
+- Updated viewport target rendering to separate interaction from solver visualization:
+  - `SkeletonViewport`: IK target handles now always render at the true target anchor (`ikTargets[jointId]`) for reliable click-and-drag behavior.
+  - `SkeletonViewport`: when whole-body solve projects/clamps the effective position, a dashed guide + ghost ring now visualizes the solved location without replacing the draggable handle.
+  - `SkeletonViewport`: added hover/active highlight on IK targets for explicit drag readiness feedback.
+- Validation:
+  - `npm run build` passes.
+  - `npm run test` passes (9 files, 34 tests).
+  - `npm run typecheck` passes.
+  - Elevated Playwright probe confirmed drag mutates target state (`l_hand` target moved from none to `{ x: 29.91, y: -266.55 }` after drag in IK mode).
+
+## 2026-02-18 - Hover Help Moved To Side Panel
+- Removed the fixed bottom `Hover Help` status bar from the main viewport layout.
+- Added the same live `Hover Help` block directly inside `sideConsolePanel` under the side-console tabs so guidance stays in-panel.
+- Verification: `npm run build` passes.
+
+## 2026-02-18 - IK Clarity Pass (Target Connector + Depth Help)
+- Added a dotted connector line from each active IK target to its current joint position in `SkeletonViewport` for immediate pull-distance readability.
+- Preserved existing solved-offset guide behavior and suppressed duplicate guide rendering when solved/joint positions overlap.
+- Added an inline `Help Menu: IK Depth` expandable panel to the IK Canvas Menu explaining 2D solve depth, target-to-joint connector meaning, whole-body depth behavior, and turnover/scope usage.
+- Verification: `npm run build` and `npm run lint` pass.
+
+## 2026-02-18 - IK Drag Responsiveness (Post-Drop)
+- Reduced IK drag solve pressure after first drop by frame-throttling `dragMove` dispatches in `useRigAdapter`:
+  - Added requestAnimationFrame batching for pending drag points (`schedulePendingDragMoveFlush`).
+  - Added explicit cancel/flush handling on drag start/end to keep interaction deterministic.
+- Simplified pointer move drag path in `SkeletonViewport`:
+  - Drag now processes only the latest pointer sample per move event (instead of iterating all coalesced samples), reducing redundant clamp/solve work and smoothing drag feel.
+  - Lowered mouse drag activation threshold (`1.5px -> 0.75px`) so drag engages more reliably on short initial movement.
+  - Increased hit affordance for IK manipulation (`JOINT_HIT_RADIUS_PAD: 6 -> 8`, `TARGET_HIT_RADIUS: 18 -> 22`) to improve first-click capture.
+- Verification:
+  - `npm run test` passes (9 files, 34 tests).
+  - `npm run build` passes.
+  - `npm run lint` passes.
+  - `npm run typecheck` passes.
+  - Elevated two-drag IK probe confirms second drag still updates target after first drop:
+    - first drag delta: `{ dx: 83.51, dy: -41.76 }`
+    - second drag delta: `{ dx: -59.15, dy: 33.41 }`
+    - screenshot: `output/web-game/ik-drag-double-probe-2026-02-18.png`

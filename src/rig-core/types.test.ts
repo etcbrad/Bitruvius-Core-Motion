@@ -14,6 +14,9 @@ describe("createInitialRigState", () => {
       lockX: true,
       lockY: true,
     });
+    expect(state.sceneLayers.background.name).toBe("Background");
+    expect(state.sceneLayers.foreground.blendMode).toBe("screen");
+    expect(state.sceneLayers.backgroundShadow.enabled).toBe(true);
   });
 
   it("respects seed overrides while preserving defaults", () => {
@@ -27,5 +30,11 @@ describe("createInitialRigState", () => {
     expect(state.constraintSettings.enforceRootWaistLock).toBe(
       DEFAULT_CONSTRAINT_SETTINGS.enforceRootWaistLock
     );
+  });
+
+  it("anchors both hips to root for center-origin leg chains", () => {
+    const state = createInitialRigState();
+    expect(state.joints.l_hip.parentId).toBe("root");
+    expect(state.joints.r_hip.parentId).toBe("root");
   });
 });

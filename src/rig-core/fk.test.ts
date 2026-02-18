@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { computeWorldTransforms } from "./graph";
 import { applySliderWrapRule, setFkRotationText } from "./fk";
-import { createInitialRigState } from "./types";
+import { createInitialRigState, DEFAULT_CONSTRAINT_SETTINGS } from "./types";
 
 describe("applySliderWrapRule", () => {
   it("clamps non-finite and negative values to 0", () => {
@@ -68,5 +68,28 @@ describe("waist/navel rotation isolation", () => {
       !closeTo(after.l_hip.worldPosition.x, before.l_hip.worldPosition.x) ||
       !closeTo(after.l_hip.worldPosition.y, before.l_hip.worldPosition.y);
     expect(hipMoved).toBe(true);
+  });
+
+  it("root rotates freely when FK friction is disabled", () => {
+    const initial = createInitialRigState({
+      constraintSettings: {
+        ...DEFAULT_CONSTRAINT_SETTINGS,
+        fkFrictionOff: true,
+      },
+    });
+    const before = computeWorldTransforms(initial.joints);
+    const nextJoints = setFkRotationText(
+      initial.joints,
+      "root",
+      initial.joints.root.localRotationDegRaw + 25,
+      initial.pins,
+      initial.constraintSettings
+    );
+    const after = computeWorldTransforms(nextJoints);
+
+    const torsoMoved =
+      !closeTo(after.torso.worldPosition.x, before.torso.worldPosition.x) ||
+      !closeTo(after.torso.worldPosition.y, before.torso.worldPosition.y);
+    expect(torsoMoved).toBe(true);
   });
 });

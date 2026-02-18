@@ -18,6 +18,8 @@ type PinProjectionResult = {
   appliedPins: number;
 };
 
+type JointDepthMap = Partial<Record<JointId, number>>;
+
 const collectDescendants = (
   rootJointId: JointId,
   childMap: Record<JointId, JointId[]>,
@@ -28,6 +30,52 @@ const collectDescendants = (
     acc.push(childId);
     collectDescendants(childId, childMap, acc);
   }
+};
+
+const resolveJointDepth = (
+  jointId: JointId,
+  parentByJoint: Partial<Record<JointId, JointId | null>>,
+  memo: JointDepthMap
+): number => {
+  const cached = memo[jointId];
+  if (cached !== undefined) {
+    return cached;
+  }
+
+  const parentId = parentByJoint[jointId];
+  const depth = parentId ? resolveJointDepth(parentId, parentByJoint, memo) + 1 : 0;
+  memo[jointId] = depth;
+  return depth;
+};
+
+const buildWorldJointDepthMap = (world: RigWorldTransforms): JointDepthMap => {
+  const parentByJoint: Partial<Record<JointId, JointId | null>> = {};
+  for (const jointId of JOINT_IDS) {
+    parentByJoint[jointId] = world[jointId].parentId;
+  }
+
+  const depthByJoint: JointDepthMap = {};
+  for (const jointId of JOINT_IDS) {
+    resolveJointDepth(jointId, parentByJoint, depthByJoint);
+  }
+  return depthByJoint;
+};
+
+export const sortPinsByJointDepth = (
+  pins: PinConstraint[],
+  depthByJoint: JointDepthMap
+): PinConstraint[] => {
+  if (pins.length < 2) {
+    return pins;
+  }
+  return pins
+    .map((pin, index) => ({
+      pin,
+      index,
+      depth: depthByJoint[pin.jointId] ?? Number.MAX_SAFE_INTEGER,
+    }))
+    .sort((a, b) => a.depth - b.depth || a.index - b.index)
+    .map((entry) => entry.pin);
 };
 
 export const upsertPin = (pins: PinConstraint[], nextPin: PinConstraint): PinConstraint[] => {
@@ -52,6 +100,7 @@ export const applyPinsToWorldTransforms = (
     return { world, appliedPins: 0 };
   }
 
+  const orderedPins = sortPinsByJointDepth(pins, buildWorldJointDepthMap(world));
   const nextWorld = {} as RigWorldTransforms;
   for (const jointId of JOINT_IDS) {
     nextWorld[jointId] = {
@@ -75,7 +124,7 @@ export const applyPinsToWorldTransforms = (
 
   let appliedPins = 0;
 
-  for (const pin of pins) {
+  for (const pin of orderedPins) {
     const current = nextWorld[pin.jointId];
     if (!current) {
       continue;
